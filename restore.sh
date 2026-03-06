@@ -1414,6 +1414,120 @@ if [ -f "$BACKUP_DIR/manifests/systemd-user-enabled.txt" ] && [ -s "$BACKUP_DIR/
     fi
 fi
 
+# --- 5e. Desktop Environment Config -------------------------------------------
+hdr "Desktop Environment Config"
+if [ -d "$BACKUP_DIR/configs/desktop" ]; then
+    if $DRY_RUN; then
+        DE_FILES=$(find "$BACKUP_DIR/configs/desktop" -type f 2>/dev/null | wc -l)
+        log "  [DRY RUN] Would restore ${DE_FILES} desktop config files"
+    else
+        # Read captured DE info
+        CAPTURED_DE="unknown"
+        [ -f "$BACKUP_DIR/configs/desktop/session-info.txt" ] && \
+            CAPTURED_DE=$(grep "^desktop=" "$BACKUP_DIR/configs/desktop/session-info.txt" 2>/dev/null | cut -d= -f2)
+        log "  Captured DE: ${CAPTURED_DE}"
+
+        # KDE Plasma configs
+        if [ -d "$BACKUP_DIR/configs/desktop/kde-config" ]; then
+            log "  Restoring KDE Plasma configs..."
+            # Stop plasmashell briefly to avoid conflicts
+            as_user "kquitapp6 plasmashell" >>"$LOGFILE" 2>&1 || \
+                as_user "kquitapp5 plasmashell" >>"$LOGFILE" 2>&1 || true
+
+            for f in "$BACKUP_DIR/configs/desktop/kde-config"/*; do
+                fname=$(basename "$f")
+                if [ -d "$f" ]; then
+                    mkdir -p "$TARGET_HOME/.config/$fname"
+                    cp -a "$f"/* "$TARGET_HOME/.config/$fname/" 2>>"$LOGFILE" || true
+                else
+                    cp "$f" "$TARGET_HOME/.config/" 2>>"$LOGFILE" || true
+                fi
+            done
+            ok "KDE rc files restored"
+
+            # Restart plasmashell
+            as_user "nohup plasmashell --replace >/dev/null 2>&1 &" >>"$LOGFILE" 2>&1 || true
+        fi
+
+        # KDE local share (konsole profiles, color schemes, themes)
+        if [ -d "$BACKUP_DIR/configs/desktop/kde-local-share" ]; then
+            for d in "$BACKUP_DIR/configs/desktop/kde-local-share"/*; do
+                dname=$(basename "$d")
+                mkdir -p "$TARGET_HOME/.local/share/$dname"
+                cp -a "$d"/* "$TARGET_HOME/.local/share/$dname/" 2>>"$LOGFILE" || true
+            done
+            ok "KDE local data (konsole profiles, themes) restored"
+        fi
+
+        # GTK configs
+        for gtkdir in gtk-3.0 gtk-4.0; do
+            if [ -d "$BACKUP_DIR/configs/desktop/$gtkdir" ]; then
+                mkdir -p "$TARGET_HOME/.config/$gtkdir"
+                cp -a "$BACKUP_DIR/configs/desktop/$gtkdir"/* "$TARGET_HOME/.config/$gtkdir/" 2>>"$LOGFILE" || true
+                log "  $gtkdir restored"
+            fi
+        done
+
+        # Fontconfig
+        if [ -d "$BACKUP_DIR/configs/desktop/fontconfig" ]; then
+            mkdir -p "$TARGET_HOME/.config/fontconfig"
+            cp -a "$BACKUP_DIR/configs/desktop/fontconfig"/* "$TARGET_HOME/.config/fontconfig/" 2>>"$LOGFILE" || true
+            log "  fontconfig restored"
+        fi
+
+        # Custom fonts
+        if [ -d "$BACKUP_DIR/configs/desktop/fonts" ]; then
+            mkdir -p "$TARGET_HOME/.local/share/fonts"
+            cp -a "$BACKUP_DIR/configs/desktop/fonts"/* "$TARGET_HOME/.local/share/fonts/" 2>>"$LOGFILE" || true
+            as_user "fc-cache -f" >>"$LOGFILE" 2>&1 || true
+            ok "Custom fonts restored & cache rebuilt"
+        fi
+
+        # GNOME dconf
+        if [ -f "$BACKUP_DIR/configs/desktop/dconf-dump.ini" ]; then
+            if command -v dconf &>/dev/null; then
+                as_user "dconf load / < '$BACKUP_DIR/configs/desktop/dconf-dump.ini'" >>"$LOGFILE" 2>&1 || true
+                ok "GNOME dconf settings restored"
+            fi
+        fi
+
+        # XFCE
+        if [ -d "$BACKUP_DIR/configs/desktop/xfce4" ]; then
+            mkdir -p "$TARGET_HOME/.config/xfce4"
+            cp -a "$BACKUP_DIR/configs/desktop/xfce4"/* "$TARGET_HOME/.config/xfce4/" 2>>"$LOGFILE" || true
+            ok "XFCE4 config restored"
+        fi
+
+        # SDDM (system-level — needs root)
+        if [ -d "$BACKUP_DIR/configs/desktop/sddm" ]; then
+            [ -f "$BACKUP_DIR/configs/desktop/sddm/sddm.conf" ] && \
+                cp "$BACKUP_DIR/configs/desktop/sddm/sddm.conf" /etc/sddm.conf 2>>"$LOGFILE" || true
+            [ -d "$BACKUP_DIR/configs/desktop/sddm/sddm.conf.d" ] && \
+                cp -a "$BACKUP_DIR/configs/desktop/sddm/sddm.conf.d"/* /etc/sddm.conf.d/ 2>>"$LOGFILE" || true
+            ok "SDDM display manager config restored"
+        fi
+
+        # Install the captured DE if not already present
+        CURRENT_DE="${XDG_CURRENT_DESKTOP:-unknown}"
+        if [ "$CURRENT_DE" = "unknown" ] || [ "$CURRENT_DE" != "$CAPTURED_DE" ]; then
+            if echo "$CAPTURED_DE" | grep -qi "kde\|plasma"; then
+                log "  Installing KDE Plasma desktop..."
+                pkg_install "$(pkg_translate 'kde-plasma-desktop')" "$(pkg_translate 'sddm')" \
+                    "$(pkg_translate 'konsole')" "$(pkg_translate 'dolphin')" "$(pkg_translate 'kate')" \
+                    >>"$LOGFILE" 2>&1 || track_failure "kde-install"
+                # Set SDDM as default display manager
+                if command -v update-alternatives &>/dev/null; then
+                    update-alternatives --set x-display-manager /usr/bin/sddm 2>>"$LOGFILE" || true
+                fi
+                systemctl enable sddm 2>>"$LOGFILE" || true
+                ok "KDE Plasma installed & SDDM enabled"
+            fi
+        fi
+    fi
+else
+    log "  No desktop config in backup — skipping"
+fi
+
 # =============================================================================
 #  PHASE 6: Fix Ownership & Permissions
 # =============================================================================

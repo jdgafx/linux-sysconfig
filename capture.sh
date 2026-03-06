@@ -472,6 +472,15 @@ done
 PROJ_CLAUDE_COUNT=$(ls "${STAGING_DIR}/configs/"*CLAUDE.md 2>/dev/null | wc -l)
 log "  ${PROJ_CLAUDE_COUNT} CLAUDE.md files captured"
 
+# Keys & MCP reference file
+for keyfile in "$HOME/dev/keys_and_mcps.md" "$HOME/keys_and_mcps.md"; do
+    if [ -f "$keyfile" ]; then
+        cp "$keyfile" "${STAGING_DIR}/configs/keys_and_mcps.md"
+        log "  keys_and_mcps.md"
+        break
+    fi
+done
+
 # --- 13. OpenCode Config -----------------------------------------------------
 hdr "OpenCode Config"
 # ~/.config/opencode — main config directory
@@ -586,7 +595,107 @@ command -v tailscale &>/dev/null && log "  Tailscale installed (will reinstall, 
 # Supermemory script
 [ -f "$HOME/.claude/scripts/supermemory.sh" ] && log "  (supermemory script already in claude/scripts)"
 
-# --- 20. System Info Snapshot -------------------------------------------------
+# --- 20. Desktop Environment (KDE/GNOME/XFCE) --------------------------------
+hdr "Desktop Environment Config"
+DE="${XDG_CURRENT_DESKTOP:-unknown}"
+log "  Detected DE: ${DE}"
+mkdir -p "${STAGING_DIR}/configs/desktop"
+
+# KDE Plasma
+if echo "$DE" | grep -qi "kde\|plasma"; then
+    log "  Capturing KDE Plasma configs..."
+    mkdir -p "${STAGING_DIR}/configs/desktop/kde-config"
+    mkdir -p "${STAGING_DIR}/configs/desktop/kde-local-share"
+
+    # KDE rc files (themes, shortcuts, window rules, panels, etc.)
+    KDE_COUNT=0
+    for f in "$HOME"/.config/k*rc "$HOME/.config/kdeglobals" \
+             "$HOME/.config/Trolltech.conf" \
+             "$HOME/.config/plasma"* \
+             "$HOME/.config/kdedefaults" \
+             "$HOME/.config/kwinoutputconfig.json"; do
+        if [ -e "$f" ]; then
+            cp -a "$f" "${STAGING_DIR}/configs/desktop/kde-config/" 2>/dev/null && \
+                KDE_COUNT=$((KDE_COUNT + 1))
+        fi
+    done
+
+    # KDE application configs (dolphin, konsole, kate, yakuake)
+    for app in dolphinrc konsolerc katerc katevirc yakuakerc; do
+        [ -f "$HOME/.config/$app" ] && \
+            cp "$HOME/.config/$app" "${STAGING_DIR}/configs/desktop/kde-config/" 2>/dev/null
+    done
+
+    # Konsole profiles
+    [ -d "$HOME/.local/share/konsole" ] && \
+        cp -a "$HOME/.local/share/konsole" "${STAGING_DIR}/configs/desktop/kde-local-share/" 2>/dev/null
+
+    # Plasma look-and-feel / themes
+    for d in plasma-org.kde.plasma.desktop-appletsrc plasma-workspace; do
+        [ -e "$HOME/.config/$d" ] && \
+            cp -a "$HOME/.config/$d" "${STAGING_DIR}/configs/desktop/kde-config/" 2>/dev/null
+    done
+
+    # KDE Connect
+    [ -d "$HOME/.config/kdeconnect" ] && \
+        cp -a "$HOME/.config/kdeconnect" "${STAGING_DIR}/configs/desktop/kde-config/" 2>/dev/null
+
+    # Local share: color-schemes, aurorae (window decorations), plasma themes
+    for d in color-schemes aurorae plasma kwin; do
+        [ -d "$HOME/.local/share/$d" ] && \
+            cp -a "$HOME/.local/share/$d" "${STAGING_DIR}/configs/desktop/kde-local-share/" 2>/dev/null
+    done
+
+    log "  ${KDE_COUNT} KDE config files captured"
+fi
+
+# GTK themes (works for all DEs)
+for gtkdir in gtk-3.0 gtk-4.0; do
+    if [ -d "$HOME/.config/$gtkdir" ]; then
+        cp -a "$HOME/.config/$gtkdir" "${STAGING_DIR}/configs/desktop/" 2>/dev/null
+        log "  $gtkdir settings"
+    fi
+done
+
+# Fontconfig
+[ -d "$HOME/.config/fontconfig" ] && \
+    cp -a "$HOME/.config/fontconfig" "${STAGING_DIR}/configs/desktop/" 2>/dev/null && \
+    log "  fontconfig"
+
+# Custom fonts
+[ -d "$HOME/.local/share/fonts" ] && \
+    cp -a "$HOME/.local/share/fonts" "${STAGING_DIR}/configs/desktop/" 2>/dev/null && \
+    log "  custom fonts ($(find "$HOME/.local/share/fonts" -type f | wc -l) files)"
+
+# GNOME (dconf dump)
+if echo "$DE" | grep -qi "gnome\|unity\|cinnamon"; then
+    if command -v dconf &>/dev/null; then
+        dconf dump / > "${STAGING_DIR}/configs/desktop/dconf-dump.ini" 2>/dev/null
+        log "  GNOME dconf dump"
+    fi
+fi
+
+# XFCE
+if echo "$DE" | grep -qi "xfce"; then
+    [ -d "$HOME/.config/xfce4" ] && \
+        cp -a "$HOME/.config/xfce4" "${STAGING_DIR}/configs/desktop/" 2>/dev/null && \
+        log "  XFCE4 config"
+fi
+
+# SDDM / Display Manager config (system-level)
+if [ -f "/etc/sddm.conf" ] || [ -d "/etc/sddm.conf.d" ]; then
+    mkdir -p "${STAGING_DIR}/configs/desktop/sddm"
+    [ -f "/etc/sddm.conf" ] && cp "/etc/sddm.conf" "${STAGING_DIR}/configs/desktop/sddm/" 2>/dev/null
+    [ -d "/etc/sddm.conf.d" ] && cp -a "/etc/sddm.conf.d" "${STAGING_DIR}/configs/desktop/sddm/" 2>/dev/null
+    log "  SDDM display manager config"
+fi
+
+# Session type
+echo "session_type=${XDG_SESSION_TYPE:-unknown}" > "${STAGING_DIR}/configs/desktop/session-info.txt"
+echo "desktop=${DE}" >> "${STAGING_DIR}/configs/desktop/session-info.txt"
+echo "display_manager=$(cat /etc/X11/default-display-manager 2>/dev/null || echo 'unknown')" >> "${STAGING_DIR}/configs/desktop/session-info.txt"
+
+# --- 21. System Info Snapshot -------------------------------------------------
 hdr "System Info"
 {
     echo "hostname=$(hostname)"
