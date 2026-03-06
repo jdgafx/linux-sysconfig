@@ -180,7 +180,7 @@ fi
 
 if [ -z "$RESTORE_SCRIPT" ] || [ ! -f "$RESTORE_SCRIPT" ]; then
     err "Could not find restore.sh anywhere!"
-    echo "Please download it manually from: https://github.com/jdgafx/Linux-Sysconfig-Package-and-Xfer"
+    echo "Please download it manually from: https://github.com/jdgafx/linux-sysconfig"
     exit 1
 fi
 

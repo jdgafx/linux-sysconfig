@@ -16,7 +16,7 @@ bash capture.sh --yes        # non-interactive (skip confirmations)
 
 ```bash
 # One-liner (downloads from Google Drive automatically)
-curl -fsSL https://raw.githubusercontent.com/jdgafx/Linux-Sysconfig-Package-and-Xfer/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jdgafx/linux-sysconfig/main/bootstrap.sh | bash
 
 # With a local backup file
 sudo bash restore.sh /path/to/backup.tar.zst
