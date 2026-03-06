@@ -490,7 +490,7 @@ hdr "PHASE 1: System Packages & Repos"
 # --- 1a. Essential tools first ------------------------------------------------
 log "Installing essential tools..."
 pkg_update
-ESSENTIAL_PKGS=(curl wget git build-essential ca-certificates gnupg zstd jq python3 python3-pip python3-venv)
+ESSENTIAL_PKGS=(curl wget git build-essential ca-certificates gnupg zstd jq python3 python3-pip python3-venv dracut)
 ESSENTIAL_NATIVE=()
 for ep in "${ESSENTIAL_PKGS[@]}"; do
     translated=$(pkg_translate "$ep")
@@ -947,6 +947,17 @@ else
         log "Installing Claude Code CLI..."
         as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm install -g @anthropic-ai/claude-code" \
             >>"$LOGFILE" 2>&1 || track_failure "claude-code-install"
+    else
+        log "Claude Code already installed, checking for updates..."
+        as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm update -g @anthropic-ai/claude-code" \
+            >>"$LOGFILE" 2>&1 || true
+    fi
+
+    # Install claude-flow (multi-agent orchestration)
+    if ! as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npx -y @claude-flow/cli@latest --version" &>/dev/null 2>&1; then
+        log "Installing claude-flow..."
+        as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm install -g @claude-flow/cli" \
+            >>"$LOGFILE" 2>&1 || track_failure "claude-flow-install"
     fi
 
     # Restore Claude config
@@ -1027,6 +1038,9 @@ else
         as_user 'curl -fsSL https://opencode.ai/install.sh | bash' >>"$LOGFILE" 2>&1 || \
         as_user 'curl -fsSL https://get.opencode.ai | bash' >>"$LOGFILE" 2>&1 || \
             track_failure "opencode-install"
+    else
+        log "OpenCode already installed, checking for updates..."
+        as_user 'curl -fsSL https://opencode.ai/install.sh | bash' >>"$LOGFILE" 2>&1 || true
     fi
 
     # Restore OpenCode config
@@ -1262,7 +1276,43 @@ else
     done
 fi
 
-# --- 5b. Clone dev repos -----------------------------------------------------
+# --- 5b. Set up Git credentials & Clone dev repos ----------------------------
+hdr "Git Credentials & Dev Repos"
+
+# Set up git credentials BEFORE cloning (uses token from backup if available)
+if [ -f "$BACKUP_DIR/configs/gh/hosts.yml" ]; then
+    GITHUB_TOKEN=$(grep 'oauth_token:' "$BACKUP_DIR/configs/gh/hosts.yml" 2>/dev/null | head -1 | awk '{print $2}')
+fi
+# Fallback: extract from CLAUDE.md if available
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$TARGET_HOME/CLAUDE.md" ]; then
+    GITHUB_TOKEN=$(grep -oP 'ghp_[a-zA-Z0-9]+' "$TARGET_HOME/CLAUDE.md" 2>/dev/null | head -1)
+fi
+# Fallback: extract from Claude settings
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$TARGET_HOME/.claude/settings.json" ]; then
+    GITHUB_TOKEN=$(grep -oP 'ghp_[a-zA-Z0-9]+' "$TARGET_HOME/.claude/settings.json" 2>/dev/null | head -1)
+fi
+
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    log "Setting up Git credential helper for GitHub..."
+    if $DRY_RUN; then
+        log "  [DRY RUN] Would configure git credential helper with GitHub token"
+    else
+        # Configure git credential store with token
+        as_user "git config --global credential.helper store" >>"$LOGFILE" 2>&1 || true
+        as_user "printf 'https://jdgafx:${GITHUB_TOKEN}@github.com\n' > \$HOME/.git-credentials && chmod 600 \$HOME/.git-credentials" \
+            >>"$LOGFILE" 2>&1 || true
+        as_user "git config --global user.name 'jdgafx'" >>"$LOGFILE" 2>&1 || true
+        as_user "git config --global user.email 'jdgafx@users.noreply.github.com'" >>"$LOGFILE" 2>&1 || true
+        ok "Git credentials configured"
+
+        # Also auth gh CLI if available
+        if command -v gh &>/dev/null; then
+            as_user "echo '${GITHUB_TOKEN}' | gh auth login --with-token" >>"$LOGFILE" 2>&1 || true
+            ok "GitHub CLI authenticated"
+        fi
+    fi
+fi
+
 hdr "Cloning Dev Repos"
 if [ -f "$BACKUP_DIR/manifests/dev-repos.txt" ]; then
     if $DRY_RUN; then
@@ -1273,10 +1323,24 @@ if [ -f "$BACKUP_DIR/manifests/dev-repos.txt" ]; then
             [ -z "$remote" ] && continue
             DRY_REPOS=$((DRY_REPOS + 1))
         done < "$BACKUP_DIR/manifests/dev-repos.txt"
-        log "  [DRY RUN] Would clone ${DRY_REPOS} dev repos"
+        log "  [DRY RUN] Would clone/update ${DRY_REPOS} dev repos to ~/dev/"
     else
         mkdir -p "$TARGET_HOME/dev"
 
+        # Inject GitHub token into clone URLs for private repos
+        inject_token() {
+            local url="$1"
+            if [ -n "${GITHUB_TOKEN:-}" ] && echo "$url" | grep -q "github.com"; then
+                # Only inject if not already present
+                if ! echo "$url" | grep -q "@github.com"; then
+                    echo "$url" | sed "s|https://github.com|https://jdgafx:${GITHUB_TOKEN}@github.com|"
+                    return
+                fi
+            fi
+            echo "$url"
+        }
+
+        CLONED=0; UPDATED=0; FAILED_CLONE=0
         while IFS='|' read -r dirname remote branch; do
             # Skip comments and non-repos
             [[ "$dirname" =~ ^# ]] && continue
@@ -1285,25 +1349,40 @@ if [ -f "$BACKUP_DIR/manifests/dev-repos.txt" ]; then
             [ -z "$remote" ] && continue
 
             target="$TARGET_HOME/dev/$dirname"
+            auth_remote=$(inject_token "$remote")
+
             if [ -d "$target/.git" ]; then
-                log "  ${dirname} — already exists, skipping"
+                # Already exists — pull latest
+                log "  ${dirname} — exists, pulling latest..."
+                as_user "cd '${target}' && git pull --ff-only" >>"$LOGFILE" 2>&1 || \
+                    as_user "cd '${target}' && git fetch --all" >>"$LOGFILE" 2>&1 || true
+                UPDATED=$((UPDATED + 1))
                 continue
             fi
 
             log "  Cloning ${dirname}..."
-            as_user "git clone --depth=1 '${remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
+            as_user "git clone --depth=1 '${auth_remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
                 # Try without depth limit
-                as_user "git clone '${remote}' '${target}'" >>"$LOGFILE" 2>&1 || \
+                as_user "git clone '${auth_remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
                     track_failure "git-clone:${dirname}"
+                    FAILED_CLONE=$((FAILED_CLONE + 1))
+                    continue
+                }
             }
+            CLONED=$((CLONED + 1))
 
             # Checkout correct branch if not main/master
             if [ -n "$branch" ] && [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
                 as_user "cd '${target}' && git checkout '${branch}'" >>"$LOGFILE" 2>&1 || true
             fi
+
+            # Clean token from stored remote URL (use clean URL going forward)
+            if [ "$auth_remote" != "$remote" ] && [ -d "$target/.git" ]; then
+                as_user "cd '${target}' && git remote set-url origin '${remote}'" >>"$LOGFILE" 2>&1 || true
+            fi
         done < "$BACKUP_DIR/manifests/dev-repos.txt"
 
-        ok "Dev repos processed"
+        ok "Dev repos: ${CLONED} cloned, ${UPDATED} updated, ${FAILED_CLONE} failed"
     fi
 fi
 
