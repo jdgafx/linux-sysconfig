@@ -438,6 +438,13 @@ if [ -d "$HOME/.claude" ]; then
     [ -f "$HOME/.claude/keybindings.json" ] && \
         cp "$HOME/.claude/keybindings.json" "${STAGING_DIR}/claude/" && \
         log "  .claude/keybindings.json"
+    # Todos and custom commands
+    for dir in todos commands; do
+        if [ -d "$HOME/.claude/$dir" ] && [ "$(ls -A "$HOME/.claude/$dir" 2>/dev/null)" ]; then
+            cp -a "$HOME/.claude/$dir" "${STAGING_DIR}/claude/"
+            log "  .claude/$dir/"
+        fi
+    done
     # Plugins — full plugin cache including skills, hooks, config
     if [ -d "$HOME/.claude/plugins" ]; then
         mkdir -p "${STAGING_DIR}/claude/plugins"
@@ -553,6 +560,40 @@ log "Scanning ~/dev for git repos..."
     done
 } > "${STAGING_DIR}/manifests/dev-repos.txt"
 log "  $(grep -c '|' "${STAGING_DIR}/manifests/dev-repos.txt") repos cataloged"
+
+# --- 16b. Dev Directory Full Backup ------------------------------------------
+hdr "Dev Directory Full Backup"
+DEV_DATA_TARBALL="${HOME}/.cache/sysconfig-capture/${BACKUP_NAME}-dev-data.tar.zst"
+if [ -d "$HOME/dev" ]; then
+    log "Creating full ~/dev backup (excluding regeneratable dirs)..."
+    log "  This preserves ALL source code, configs, untracked files, and git history."
+    log "  Excludes: node_modules, __pycache__, .next, venv, .swarm, .claude-flow, target"
+    DEV_RAW_SIZE=$(du -sh "$HOME/dev" \
+        --exclude='node_modules' --exclude='__pycache__' --exclude='.next' \
+        --exclude='venv' --exclude='.venv' --exclude='.swarm' \
+        --exclude='.claude-flow' --exclude='.hive-mind' --exclude='.agent' \
+        --exclude='.claude-code-mux' --exclude='target' 2>/dev/null | cut -f1)
+    log "  Estimated size before compression: ${DEV_RAW_SIZE}"
+    tar -C "$HOME" \
+        --exclude='node_modules' \
+        --exclude='__pycache__' \
+        --exclude='.next' \
+        --exclude='venv' \
+        --exclude='.venv' \
+        --exclude='.swarm' \
+        --exclude='.claude-flow' \
+        --exclude='.hive-mind' \
+        --exclude='.agent' \
+        --exclude='.claude-code-mux' \
+        --exclude='target' \
+        --exclude='*.pyc' \
+        -cf - dev/ 2>/dev/null \
+        | zstd -3 -T0 -o "$DEV_DATA_TARBALL"
+    DEV_DATA_SIZE=$(du -h "$DEV_DATA_TARBALL" | cut -f1)
+    log "  Dev data archive: ${DEV_DATA_TARBALL} (${DEV_DATA_SIZE})"
+else
+    warn "No ~/dev directory found — skipping dev data backup"
+fi
 
 # --- 17. Systemd User Services -----------------------------------------------
 hdr "Systemd User Services"
@@ -787,6 +828,13 @@ if command -v rclone &>/dev/null; then
             rclone copy "$TARBALL" "$GDRIVE_DEST" --progress --transfers=4 && \
                 log "Upload complete!" || warn "Upload failed — archive saved locally"
 
+            # Upload dev-data tarball (full ~/dev backup)
+            if [ -f "${DEV_DATA_TARBALL:-}" ]; then
+                log "Uploading dev-data archive (full ~/dev backup)..."
+                rclone copy "$DEV_DATA_TARBALL" "$GDRIVE_DEST" --progress --transfers=4 && \
+                    log "Dev data upload complete!" || warn "Dev data upload failed — saved locally"
+            fi
+
             # Also upload the bootstrap and restore scripts
             SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
             for script in bootstrap.sh restore.sh verify.sh; do
@@ -818,6 +866,9 @@ cat <<'BANNER'
 BANNER
 echo -e "${NC}"
 log "Backup:     ${BOLD}${TARBALL}${NC}"
+if [ -f "${DEV_DATA_TARBALL:-}" ]; then
+    log "Dev Data:   ${BOLD}${DEV_DATA_TARBALL}${NC} ($(du -h "$DEV_DATA_TARBALL" | cut -f1))"
+fi
 if $ENCRYPT; then
     log "Encryption: ${GREEN}${BOLD}ENABLED${NC} (age/gpg)"
 else

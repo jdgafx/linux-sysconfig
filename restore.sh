@@ -485,6 +485,68 @@ BACKUP_DIR=$(find "$EXTRACT_DIR" -maxdepth 1 -type d -name "linux-sysconfig-*" |
 log "Backup contents at: ${BACKUP_DIR}"
 ls "$BACKUP_DIR"/ 2>/dev/null | tee -a "$LOGFILE"
 
+# --- Dev Data Tarball (full ~/dev backup) ------------------------------------
+hdr "Dev Directory Full Restore"
+TARBALL_REAL="$(realpath "$TARBALL")"
+TARBALL_DIR="$(dirname "$TARBALL_REAL")"
+TARBALL_BASE="$(basename "$TARBALL_REAL" .tar.zst)"
+DEV_DATA_TARBALL=""
+
+# Search for dev-data tarball: same dir as main tarball, then common locations
+for candidate in \
+    "${TARBALL_DIR}/${TARBALL_BASE}-dev-data.tar.zst" \
+    "${TARBALL_DIR}/"*-dev-data.tar.zst \
+    /tmp/*-dev-data.tar.zst \
+    "$TARGET_HOME/"*-dev-data.tar.zst; do
+    # Handle glob expansion
+    for f in $candidate; do
+        if [ -f "$f" ]; then
+            DEV_DATA_TARBALL="$f"
+            break 2
+        fi
+    done
+done
+
+# Try Google Drive if not found locally
+if [ -z "$DEV_DATA_TARBALL" ] && command -v rclone &>/dev/null; then
+    if rclone listremotes 2>/dev/null | grep -q "gdrive:"; then
+        GDRIVE_SRC="gdrive:Linux-Sysconfig-Backups"
+        if rclone lsd gdrive: &>/dev/null 2>&1; then
+            log "Checking Google Drive for dev-data archive..."
+            DEV_DATA_REMOTE=$(rclone ls "$GDRIVE_SRC" 2>/dev/null \
+                | grep '\-dev-data\.tar\.zst$' | sort -rn | head -1 | awk '{print $2}')
+            if [ -n "$DEV_DATA_REMOTE" ]; then
+                log "  Found on Drive: ${DEV_DATA_REMOTE}"
+                DEV_DATA_TARBALL="/tmp/${DEV_DATA_REMOTE}"
+                if $DRY_RUN; then
+                    log "  [DRY RUN] Would download dev-data from Google Drive"
+                else
+                    rclone copy "${GDRIVE_SRC}/${DEV_DATA_REMOTE}" /tmp/ --progress 2>>"$LOGFILE" && \
+                        log "  Downloaded dev-data archive" || { DEV_DATA_TARBALL=""; warn "Failed to download dev-data"; }
+                fi
+            fi
+        fi
+    fi
+fi
+
+if [ -n "$DEV_DATA_TARBALL" ] && [ -f "$DEV_DATA_TARBALL" ]; then
+    DEV_DATA_SIZE=$(du -h "$DEV_DATA_TARBALL" | cut -f1)
+    log "Found dev-data archive: $(basename "$DEV_DATA_TARBALL") (${DEV_DATA_SIZE})"
+    if $DRY_RUN; then
+        log "  [DRY RUN] Would extract full ~/dev backup"
+    else
+        log "Extracting full ~/dev backup (this may take a while)..."
+        mkdir -p "$TARGET_HOME/dev"
+        tar -I zstd -xf "$DEV_DATA_TARBALL" -C "$TARGET_HOME" 2>>"$LOGFILE" && \
+            ok "Dev directory fully restored from backup" || \
+            track_failure "dev-data-extract"
+        chown -R "$TARGET_USER:$(id -gn "$TARGET_USER")" "$TARGET_HOME/dev" 2>>"$LOGFILE" || true
+    fi
+else
+    log "No dev-data archive found — will clone repos from git manifest only"
+    log "  (Run capture.sh on source machine to create full dev-data backup)"
+fi
+
 # =============================================================================
 #  PHASE 1: Base System (requires network)
 # =============================================================================
@@ -994,6 +1056,14 @@ else
             ok "Claude plugins restored"
         fi
 
+        # Todos and custom commands
+        for dir in todos commands; do
+            if [ -d "$BACKUP_DIR/claude/$dir" ]; then
+                cp -a "$BACKUP_DIR/claude/$dir" "$TARGET_HOME/.claude/"
+                log "  .claude/$dir/ restored"
+            fi
+        done
+
         # Project directories (memory, settings — no transcripts)
         if [ -d "$BACKUP_DIR/claude/projects" ]; then
             cp -a "$BACKUP_DIR/claude/projects" "$TARGET_HOME/.claude/"
@@ -1355,18 +1425,29 @@ if [ -f "$BACKUP_DIR/manifests/dev-repos.txt" ]; then
             auth_remote=$(inject_token "$remote")
 
             if [ -d "$target/.git" ]; then
-                # Already exists — pull latest
-                log "  ${dirname} — exists, pulling latest..."
-                as_user "cd '${target}' && git pull --ff-only" >>"$LOGFILE" 2>&1 || \
+                # Already exists — full fetch + unshallow if needed + pull
+                log "  ${dirname} — exists, full fetch + pull..."
+                as_user "cd '${target}' && git remote set-url origin '${remote}'" >>"$LOGFILE" 2>&1 || true
+                as_user "cd '${target}' && git fetch --all --unshallow" >>"$LOGFILE" 2>&1 || \
                     as_user "cd '${target}' && git fetch --all" >>"$LOGFILE" 2>&1 || true
+                as_user "cd '${target}' && git pull --ff-only" >>"$LOGFILE" 2>&1 || true
                 UPDATED=$((UPDATED + 1))
                 continue
             fi
 
-            log "  Cloning ${dirname}..."
-            as_user "git clone --depth=1 '${auth_remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
-                # Try without depth limit
-                as_user "git clone '${auth_remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
+            # If directory exists from dev-data extract but no .git, init and fetch
+            if [ -d "$target" ] && [ ! -d "$target/.git" ]; then
+                log "  ${dirname} — exists (from dev-data), adding git remote..."
+                as_user "cd '${target}' && git init && git remote add origin '${remote}' && git fetch --all" >>"$LOGFILE" 2>&1 && \
+                as_user "cd '${target}' && git checkout -f '${branch:-main}'" >>"$LOGFILE" 2>&1 || true
+                CLONED=$((CLONED + 1))
+                continue
+            fi
+
+            log "  Cloning ${dirname} (full depth)..."
+            as_user "git clone '${auth_remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
+                # Try with single-branch as fallback
+                as_user "git clone --single-branch '${auth_remote}' '${target}'" >>"$LOGFILE" 2>&1 || {
                     track_failure "git-clone:${dirname}"
                     FAILED_CLONE=$((FAILED_CLONE + 1))
                     continue
@@ -1892,7 +1973,7 @@ BANNER
     echo -e "    ${GREEN}✓${NC} Shell config (.bashrc, .bashrc.d/, SSH keys)"
     echo -e "    ${GREEN}✓${NC} Desktop environment (KDE Plasma + panels)"
     echo -e "    ${GREEN}✓${NC} Boot manager (systemd-boot + dracut)"
-    echo -e "    ${GREEN}✓${NC} Dev repos cloned to ~/dev/"
+    echo -e "    ${GREEN}✓${NC} Dev directory restored (full backup + git repos)"
     echo -e "  ${CYAN}─────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${BOLD}Next steps:${NC}"
