@@ -515,8 +515,8 @@ if [ "$PKG_MANAGER" = "apt" ]; then
             log "  [DRY RUN] Would restore ${keyring_count} keyrings"
         else
             mkdir -p /usr/share/keyrings /etc/apt/keyrings
-            cp -n "$BACKUP_DIR/keyrings/"*.gpg /usr/share/keyrings/ 2>/dev/null || true
-            cp -n "$BACKUP_DIR/keyrings/"*.gpg /etc/apt/keyrings/ 2>/dev/null || true
+            cp -f "$BACKUP_DIR/keyrings/"*.gpg /usr/share/keyrings/ 2>/dev/null || true
+            cp -f "$BACKUP_DIR/keyrings/"*.gpg /etc/apt/keyrings/ 2>/dev/null || true
             ok "Keyrings restored"
         fi
     fi
@@ -785,14 +785,15 @@ hdr "uv (Astral)"
 if $DRY_RUN; then
     DRY_PKGS=$((DRY_PKGS + 1))
     log "  [DRY RUN] Would install uv (Astral)"
-elif ! command -v uv &>/dev/null; then
+else
+    log "Installing/updating uv..."
     if command -v snap &>/dev/null; then
-        snap install astral-uv --classic >>"$LOGFILE" 2>&1 || track_failure "snap:astral-uv"
+        snap install astral-uv --classic >>"$LOGFILE" 2>&1 || \
+            snap refresh astral-uv --classic >>"$LOGFILE" 2>&1 || track_failure "snap:astral-uv"
     else
-        # Fallback: install via official script
         as_user "curl -LsSf https://astral.sh/uv/install.sh | sh" >>"$LOGFILE" 2>&1 || track_failure "uv-install"
     fi
-    ok "uv installed"
+    ok "uv installed/updated"
 fi
 
 # =============================================================================
@@ -823,9 +824,12 @@ if [ -d "$BACKUP_DIR/dotfiles" ]; then
             fname=$(basename "$f")
             # Don't overwrite .bashrc on Debian — merge instead
             if [ "$fname" = ".bashrc" ]; then
-                # Append our customizations if not already present
-                if ! grep -q "bashrc.d" "$TARGET_HOME/.bashrc" 2>/dev/null; then
-                    cat >> "$TARGET_HOME/.bashrc" <<'BASHRC_APPEND'
+                # Remove old customization block if present, then re-append fresh
+                if grep -q "bashrc.d" "$TARGET_HOME/.bashrc" 2>/dev/null; then
+                    # Strip everything from "# bun" to end of our block (opencode PATH line)
+                    sed -i '/^# bun$/,/^export PATH=\$HOME\/.opencode\/bin:\$PATH$/d' "$TARGET_HOME/.bashrc" 2>/dev/null || true
+                fi
+                cat >> "$TARGET_HOME/.bashrc" <<'BASHRC_APPEND'
 
 # bun
 export BUN_INSTALL="$HOME/.bun"
@@ -856,10 +860,7 @@ fi
 # opencode
 export PATH=$HOME/.opencode/bin:$PATH
 BASHRC_APPEND
-                    log "  .bashrc — appended dev customizations"
-                else
-                    log "  .bashrc — customizations already present"
-                fi
+                    log "  .bashrc — dev customizations applied"
             else
                 cp "$f" "$TARGET_HOME/$fname"
                 log "  $fname"
@@ -945,23 +946,15 @@ if $DRY_RUN; then
         log "  [DRY RUN] Would restore ${claude_files} Claude config files"
     fi
 else
-    # Install Claude CLI
-    if ! as_user 'command -v claude' &>/dev/null; then
-        log "Installing Claude Code CLI..."
-        as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm install -g @anthropic-ai/claude-code" \
-            >>"$LOGFILE" 2>&1 || track_failure "claude-code-install"
-    else
-        log "Claude Code already installed, checking for updates..."
-        as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm update -g @anthropic-ai/claude-code" \
-            >>"$LOGFILE" 2>&1 || true
-    fi
+    # Install/update Claude CLI (always force-install for fresh state)
+    log "Installing/updating Claude Code CLI..."
+    as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm install -g @anthropic-ai/claude-code" \
+        >>"$LOGFILE" 2>&1 || track_failure "claude-code-install"
 
-    # Install claude-flow (multi-agent orchestration)
-    if ! as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npx -y @claude-flow/cli@latest --version" &>/dev/null 2>&1; then
-        log "Installing claude-flow..."
-        as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm install -g @claude-flow/cli" \
-            >>"$LOGFILE" 2>&1 || track_failure "claude-flow-install"
-    fi
+    # Install/update claude-flow (multi-agent orchestration)
+    log "Installing/updating claude-flow..."
+    as_user "export NVM_DIR=\$HOME/.nvm && . \$NVM_DIR/nvm.sh && npm install -g @claude-flow/cli" \
+        >>"$LOGFILE" 2>&1 || track_failure "claude-flow-install"
 
     # Restore Claude config
     if [ -d "$BACKUP_DIR/claude" ]; then
@@ -1035,16 +1028,11 @@ if $DRY_RUN; then
     [ -d "$BACKUP_DIR/configs/opencode" ] && { DRY_CONFIGS=$((DRY_CONFIGS + 1)); log "  [DRY RUN] Would restore OpenCode config"; }
     [ -d "$BACKUP_DIR/configs/opencode-data" ] && { DRY_CONFIGS=$((DRY_CONFIGS + 1)); log "  [DRY RUN] Would restore OpenCode auth data"; }
 else
-    # Install OpenCode
-    if ! as_user 'command -v opencode' &>/dev/null; then
-        log "Installing OpenCode..."
-        as_user 'curl -fsSL https://opencode.ai/install.sh | bash' >>"$LOGFILE" 2>&1 || \
-        as_user 'curl -fsSL https://get.opencode.ai | bash' >>"$LOGFILE" 2>&1 || \
-            track_failure "opencode-install"
-    else
-        log "OpenCode already installed, checking for updates..."
-        as_user 'curl -fsSL https://opencode.ai/install.sh | bash' >>"$LOGFILE" 2>&1 || true
-    fi
+    # Install/update OpenCode (always reinstall for latest version)
+    log "Installing/updating OpenCode..."
+    as_user 'curl -fsSL https://opencode.ai/install.sh | bash' >>"$LOGFILE" 2>&1 || \
+    as_user 'curl -fsSL https://get.opencode.ai | bash' >>"$LOGFILE" 2>&1 || \
+        track_failure "opencode-install"
 
     # Restore OpenCode config
     if [ -d "$BACKUP_DIR/configs/opencode" ]; then
@@ -1092,40 +1080,37 @@ if $DRY_RUN; then
     log "  [DRY RUN] Would install GitHub CLI (gh)"
     [ -d "$BACKUP_DIR/configs/gh" ] && { DRY_CONFIGS=$((DRY_CONFIGS + 1)); log "  [DRY RUN] Would restore gh CLI config"; }
 else
-    if ! command -v gh &>/dev/null; then
-        log "Installing GitHub CLI..."
-        case "$PKG_MANAGER" in
-            apt)
-                (type -p wget >/dev/null || pkg_install_one "wget") && \
-                mkdir -p -m 755 /etc/apt/keyrings && \
-                wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
-                chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
-                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null && \
-                apt-get update -qq && apt-get install -y gh >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
-                ;;
-            dnf|yum)
-                dnf install -y 'dnf-command(config-manager)' >>"$LOGFILE" 2>&1 || true
-                dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo >>"$LOGFILE" 2>&1 && \
-                dnf install -y gh >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
-                ;;
-            pacman)
-                pacman -S --noconfirm --needed github-cli >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
-                ;;
-            zypper)
-                zypper install -y gh >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
-                ;;
-            apk)
-                apk add github-cli >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
-                ;;
-            *)
-                # Fallback: install from official script
-                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                    -o /tmp/gh-keyring.gpg 2>/dev/null && \
-                warn "gh CLI: no known install method for ${PKG_MANAGER}, try manual install" || \
-                track_failure "gh-cli"
-                ;;
-        esac
-    fi
+    log "Installing/updating GitHub CLI..."
+    case "$PKG_MANAGER" in
+        apt)
+            (type -p wget >/dev/null || pkg_install_one "wget") && \
+            mkdir -p -m 755 /etc/apt/keyrings && \
+            wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+            chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null && \
+            apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall gh >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
+            ;;
+        dnf|yum)
+            dnf install -y 'dnf-command(config-manager)' >>"$LOGFILE" 2>&1 || true
+            dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo >>"$LOGFILE" 2>&1 && \
+            dnf install -y gh >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
+            ;;
+        pacman)
+            pacman -S --noconfirm --needed github-cli >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
+            ;;
+        zypper)
+            zypper install -y gh >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
+            ;;
+        apk)
+            apk add github-cli >>"$LOGFILE" 2>&1 || track_failure "gh-cli"
+            ;;
+        *)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                -o /tmp/gh-keyring.gpg 2>/dev/null && \
+            warn "gh CLI: no known install method for ${PKG_MANAGER}, try manual install" || \
+            track_failure "gh-cli"
+            ;;
+    esac
 
     if [ -d "$BACKUP_DIR/configs/gh" ]; then
         mkdir -p "$TARGET_HOME/.config/gh"
@@ -1141,10 +1126,8 @@ if $DRY_RUN; then
     log "  [DRY RUN] Would install rclone"
     [ -d "$BACKUP_DIR/configs/rclone" ] && { DRY_CONFIGS=$((DRY_CONFIGS + 1)); log "  [DRY RUN] Would restore rclone config"; }
 else
-    if ! command -v rclone &>/dev/null; then
-        log "Installing rclone..."
-        curl -fsSL https://rclone.org/install.sh | bash >>"$LOGFILE" 2>&1 || track_failure "rclone"
-    fi
+    log "Installing/updating rclone..."
+    curl -fsSL https://rclone.org/install.sh | bash >>"$LOGFILE" 2>&1 || track_failure "rclone"
 
     if [ -d "$BACKUP_DIR/configs/rclone" ]; then
         mkdir -p "$TARGET_HOME/.config/rclone"
@@ -1158,8 +1141,8 @@ hdr "Tailscale"
 if $DRY_RUN; then
     DRY_PKGS=$((DRY_PKGS + 1))
     log "  [DRY RUN] Would install Tailscale"
-elif ! command -v tailscale &>/dev/null; then
-    log "Installing Tailscale..."
+else
+    log "Installing/updating Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | bash >>"$LOGFILE" 2>&1 || track_failure "tailscale"
 fi
 
@@ -1173,65 +1156,52 @@ if $DRY_RUN; then
         [ -d "$BACKUP_DIR/configs/$browser" ] && { DRY_CONFIGS=$((DRY_CONFIGS + 1)); log "  [DRY RUN] Would restore $browser bookmarks/prefs"; }
     done
 else
-    if ! command -v google-chrome &>/dev/null; then
-        log "Installing Google Chrome..."
-        case "$PKG_MANAGER" in
-            apt)
-                wget -q -O /tmp/chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
-                dpkg -i /tmp/chrome.deb >>"$LOGFILE" 2>&1 || apt-get install -fy >>"$LOGFILE" 2>&1
-                rm -f /tmp/chrome.deb
-                ;;
-            dnf|yum)
-                # Chrome repo was already added in Phase 1b for Fedora
-                dnf install -y google-chrome-stable >>"$LOGFILE" 2>&1 || track_failure "chrome"
-                ;;
-            pacman)
-                # Chrome available from AUR via yay
-                if command -v yay &>/dev/null; then
-                    as_user "yay -S --noconfirm google-chrome" >>"$LOGFILE" 2>&1 || track_failure "chrome"
-                else
-                    warn "Install google-chrome from AUR manually (yay not available)"
-                fi
-                ;;
-            zypper)
-                zypper install -y google-chrome-stable >>"$LOGFILE" 2>&1 || {
-                    # Fallback: add Google repo and try again
-                    zypper ar -f https://dl.google.com/linux/chrome/rpm/stable/x86_64 google-chrome 2>>"$LOGFILE" || true
-                    rpm --import https://dl.google.com/linux/linux_signing_key.pub 2>>"$LOGFILE" || true
-                    zypper install -y google-chrome-stable >>"$LOGFILE" 2>&1 || track_failure "chrome"
-                }
-                ;;
-            *)
-                warn "Chrome: no automated install method for ${PKG_MANAGER}"
-                ;;
-        esac
-        command -v google-chrome &>/dev/null && ok "Google Chrome installed"
-    fi
+    log "Installing/updating Google Chrome..."
+    case "$PKG_MANAGER" in
+        apt)
+            wget -q -O /tmp/chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" && \
+            dpkg -i /tmp/chrome.deb >>"$LOGFILE" 2>&1 || apt-get install -fy >>"$LOGFILE" 2>&1
+            rm -f /tmp/chrome.deb
+            ;;
+        dnf|yum)
+            dnf install -y google-chrome-stable >>"$LOGFILE" 2>&1 || track_failure "chrome"
+            ;;
+        pacman)
+            if command -v yay &>/dev/null; then
+                as_user "yay -S --noconfirm google-chrome" >>"$LOGFILE" 2>&1 || track_failure "chrome"
+            else
+                warn "Install google-chrome from AUR manually (yay not available)"
+            fi
+            ;;
+        zypper)
+            zypper install -y google-chrome-stable >>"$LOGFILE" 2>&1 || {
+                zypper ar -f https://dl.google.com/linux/chrome/rpm/stable/x86_64 google-chrome 2>>"$LOGFILE" || true
+                rpm --import https://dl.google.com/linux/linux_signing_key.pub 2>>"$LOGFILE" || true
+                zypper install -y google-chrome-stable >>"$LOGFILE" 2>&1 || track_failure "chrome"
+            }
+            ;;
+        *)
+            warn "Chrome: no automated install method for ${PKG_MANAGER}"
+            ;;
+    esac
+    command -v google-chrome &>/dev/null && ok "Google Chrome installed/updated"
 
     # Chrome Canary (separate repo + signing key required)
     if [ "$PKG_MANAGER" = "apt" ]; then
-        if ! dpkg -l google-chrome-canary &>/dev/null 2>&1; then
-            log "  Installing Chrome Canary..."
-            # Add the Canary repo and signing key if not already present
-            if [ ! -f /etc/apt/sources.list.d/google-chrome-canary.sources ] && \
-               [ ! -f /etc/apt/sources.list.d/google-chrome-canary.list ]; then
-                # Try restoring from backup first (keyrings + sources captured by capture.sh)
-                if [ -f "$BACKUP_DIR/keyrings/google-chrome-canary.gpg" ]; then
-                    cp "$BACKUP_DIR/keyrings/google-chrome-canary.gpg" /usr/share/keyrings/ 2>>"$LOGFILE" || true
-                else
-                    wget -qO- https://dl.google.com/linux/linux_signing_key.pub | \
-                        gpg --dearmor -o /usr/share/keyrings/google-chrome-canary.gpg 2>>"$LOGFILE" || true
-                fi
-                echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-canary.gpg] https://dl.google.com/linux/chrome-canary/deb/ stable main" \
-                    > /etc/apt/sources.list.d/google-chrome-canary.list 2>>"$LOGFILE" || true
-                apt-get update -qq 2>>"$LOGFILE" || true
-            fi
-            DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-canary >>"$LOGFILE" 2>&1 || \
-                track_failure "chrome-canary"
-            command -v google-chrome-canary &>/dev/null && ok "Chrome Canary installed"
+        log "  Installing/updating Chrome Canary..."
+        # Always set up the Canary repo and signing key (overwrite if stale)
+        if [ -f "$BACKUP_DIR/keyrings/google-chrome-canary.gpg" ]; then
+            cp -f "$BACKUP_DIR/keyrings/google-chrome-canary.gpg" /usr/share/keyrings/ 2>>"$LOGFILE" || true
         else
-            log "  Chrome Canary already installed"
+            wget -qO- https://dl.google.com/linux/linux_signing_key.pub | \
+                gpg --dearmor --yes -o /usr/share/keyrings/google-chrome-canary.gpg 2>>"$LOGFILE" || true
         fi
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-canary.gpg] https://dl.google.com/linux/chrome-canary/deb/ stable main" \
+            > /etc/apt/sources.list.d/google-chrome-canary.list 2>>"$LOGFILE" || true
+        apt-get update -qq 2>>"$LOGFILE" || true
+        DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-canary >>"$LOGFILE" 2>&1 || \
+            track_failure "chrome-canary"
+        command -v google-chrome-canary &>/dev/null && ok "Chrome Canary installed/updated"
     fi
 
     # Restore browser bookmarks/prefs (only for browsers that are actually installed)
@@ -1624,52 +1594,47 @@ if [ -d "$BACKUP_DIR/configs/desktop" ]; then
             ok "SDDM display manager config restored"
         fi
 
-        # Install the captured DE if not already present
-        CURRENT_DE="${XDG_CURRENT_DESKTOP:-unknown}"
-        KDE_FRESHLY_INSTALLED=false
-        if [ "$CURRENT_DE" = "unknown" ] || [ "$CURRENT_DE" != "$CAPTURED_DE" ]; then
-            if echo "$CAPTURED_DE" | grep -qi "kde\|plasma"; then
-                log "  Installing full KDE Plasma desktop environment..."
+        # Install/reinstall the captured DE (always ensure all packages present)
+        if echo "$CAPTURED_DE" | grep -qi "kde\|plasma"; then
+            log "  Installing/updating full KDE Plasma desktop environment..."
 
-                # Core desktop + essential KDE apps for a complete, usable desktop
-                KDE_PKGS_DEB=(
-                    kde-plasma-desktop plasma-workspace sddm sddm-theme-breeze
-                    konsole dolphin kate ark okular gwenview spectacle
-                    plasma-systemmonitor plasma-nm plasma-pa plasma-firewall
-                    kde-spectacle kscreen kwin-wayland kwin-x11
-                    breeze-gtk-theme kde-config-gtk-style
-                    xdg-desktop-portal-kde pipewire wireplumber
-                    phonon4qt5-backend-vlc
-                    plasma-discover flatpak-backend
-                    powerdevil bluedevil
-                )
-                log "  Installing ${#KDE_PKGS_DEB[@]} KDE packages..."
-                KDE_NATIVE=()
-                for kp in "${KDE_PKGS_DEB[@]}"; do
-                    kp_translated=$(pkg_translate "$kp")
-                    [ -n "$kp_translated" ] && KDE_NATIVE+=("$kp_translated")
+            # Core desktop + essential KDE apps for a complete, usable desktop
+            KDE_PKGS_DEB=(
+                kde-plasma-desktop plasma-workspace sddm sddm-theme-breeze
+                konsole dolphin kate ark okular gwenview spectacle
+                plasma-systemmonitor plasma-nm plasma-pa plasma-firewall
+                kde-spectacle kscreen kwin-wayland kwin-x11
+                breeze-gtk-theme kde-config-gtk-style
+                xdg-desktop-portal-kde pipewire wireplumber
+                phonon4qt5-backend-vlc
+                plasma-discover flatpak-backend
+                powerdevil bluedevil
+            )
+            log "  Installing ${#KDE_PKGS_DEB[@]} KDE packages..."
+            KDE_NATIVE=()
+            for kp in "${KDE_PKGS_DEB[@]}"; do
+                kp_translated=$(pkg_translate "$kp")
+                [ -n "$kp_translated" ] && KDE_NATIVE+=("$kp_translated")
+            done
+            pkg_install_batch "${KDE_NATIVE[@]}" >>"$LOGFILE" 2>&1 || {
+                warn "Batch KDE install had errors, retrying core packages individually..."
+                for kp in kde-plasma-desktop sddm konsole dolphin kate kwin-wayland kscreen; do
+                    pkg_install_one "$(pkg_translate "$kp")" >>"$LOGFILE" 2>&1 || true
                 done
-                pkg_install_batch "${KDE_NATIVE[@]}" >>"$LOGFILE" 2>&1 || {
-                    warn "Batch KDE install had errors, retrying core packages individually..."
-                    for kp in kde-plasma-desktop sddm konsole dolphin kate kwin-wayland kscreen; do
-                        pkg_install_one "$(pkg_translate "$kp")" >>"$LOGFILE" 2>&1 || true
-                    done
-                }
+            }
 
-                # Set SDDM as default display manager
-                if command -v update-alternatives &>/dev/null; then
-                    update-alternatives --set x-display-manager /usr/bin/sddm 2>>"$LOGFILE" || true
-                fi
-                systemctl enable sddm 2>>"$LOGFILE" || true
-                KDE_FRESHLY_INSTALLED=true
-                ok "KDE Plasma desktop fully installed & SDDM enabled"
+            # Set SDDM as default display manager
+            if command -v update-alternatives &>/dev/null; then
+                update-alternatives --set x-display-manager /usr/bin/sddm 2>>"$LOGFILE" || true
             fi
+            systemctl enable sddm 2>>"$LOGFILE" || true
+            ok "KDE Plasma desktop fully installed & SDDM enabled"
         fi
 
-        # CRITICAL: Re-apply KDE configs AFTER install
+        # CRITICAL: Always re-apply KDE configs AFTER package install/update.
         # KDE package install drops default configs that overwrite what we restored above.
         # Re-copy the panel/desktop configs so they survive first login.
-        if $KDE_FRESHLY_INSTALLED && [ -d "$BACKUP_DIR/configs/desktop/kde-config" ]; then
+        if [ -d "$BACKUP_DIR/configs/desktop/kde-config" ]; then
             log "  Re-applying KDE configs after fresh install (overriding package defaults)..."
             # Nuke any defaults the package install just created
             rm -f "$TARGET_HOME/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
