@@ -1208,18 +1208,19 @@ else
         command -v google-chrome &>/dev/null && ok "Google Chrome installed"
     fi
 
-    # Chrome Canary (Debian/Ubuntu only — not available on other distros)
-    if [ "$PKG_MANAGER" = "apt" ]; then
-        if ! dpkg -l google-chrome-canary &>/dev/null 2>&1; then
-            apt-get update -qq 2>>"$LOGFILE" || true
-            DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-canary >>"$LOGFILE" 2>&1 || \
-                warn "Chrome Canary may not be available yet (repo imported)"
-        fi
-    fi
+    # Chrome Canary — does NOT exist as a Linux package (only Windows/Mac)
+    # Skip install entirely. Only restore bookmarks if the user manually installed it.
+    log "  Chrome Canary: skipped (not available for Linux)"
 
-    # Restore browser bookmarks/prefs
+    # Restore browser bookmarks/prefs (only for browsers that are actually installed)
     for browser in google-chrome google-chrome-canary; do
         if [ -d "$BACKUP_DIR/configs/$browser" ]; then
+            # Only restore config if the browser binary exists — restoring prefs
+            # for a non-existent browser causes crash dialogs and broken state
+            case "$browser" in
+                google-chrome) command -v google-chrome-stable &>/dev/null || command -v google-chrome &>/dev/null || { log "  $browser not installed, skipping prefs"; continue; } ;;
+                google-chrome-canary) command -v google-chrome-canary &>/dev/null || { log "  $browser not installed, skipping prefs"; continue; } ;;
+            esac
             mkdir -p "$TARGET_HOME/.config/$browser/Default"
             for f in Bookmarks Preferences "Local State"; do
                 [ -f "$BACKUP_DIR/configs/$browser/$f" ] && \
@@ -1230,6 +1231,13 @@ else
             log "  $browser bookmarks restored"
         fi
     done
+
+    # Disable apport crash reporter (noisy on fresh installs with restored configs)
+    if [ -f /etc/default/apport ]; then
+        sed -i 's/enabled=1/enabled=0/' /etc/default/apport 2>>"$LOGFILE" || true
+        systemctl stop apport.service 2>>"$LOGFILE" || true
+        log "  Disabled apport crash reporter (prevents false crash dialogs)"
+    fi
 fi
 
 # --- 4i. Fish Shell Config ----------------------------------------------------
