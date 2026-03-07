@@ -32,11 +32,19 @@ LOCAL_BACKUP="${1:-}"
 echo -e "${CYAN}${BOLD}"
 cat <<'BANNER'
   ╔══════════════════════════════════════════════════════════════╗
-  ║            Linux Sysconfig Bootstrap v2.0                   ║
-  ║            One Command • Full Environment                   ║
+  ║            Linux Sysconfig Bootstrap v3.0                   ║
+  ║        One Command • Full Environment • Any Distro          ║
   ╚══════════════════════════════════════════════════════════════╝
 BANNER
 echo -e "${NC}"
+echo -e "  ${BOLD}This will fully restore your dev environment:${NC}"
+echo -e "    ${CYAN}•${NC} System packages, repos & keyrings"
+echo -e "    ${CYAN}•${NC} Dev tools (Node/NVM, Bun, Python, Claude Code)"
+echo -e "    ${CYAN}•${NC} KDE Plasma desktop with panels & themes"
+echo -e "    ${CYAN}•${NC} systemd-boot + dracut (UEFI boot manager)"
+echo -e "    ${CYAN}•${NC} Dotfiles, SSH keys, git repos"
+echo -e "    ${CYAN}•${NC} All configs & credentials"
+echo ""
 
 # --- Step 0: Get sudo --------------------------------------------------------
 hdr "Checking Permissions"
@@ -253,13 +261,21 @@ if [ $EXIT_CODE -eq 0 ]; then
     cat <<'BANNER'
   ╔══════════════════════════════════════════════════════════════╗
   ║            BOOTSTRAP COMPLETE                               ║
+  ║            Your dev machine is fully configured!             ║
   ╚══════════════════════════════════════════════════════════════╝
 BANNER
     echo -e "${NC}"
-    echo -e "${BOLD}Log out and back in to activate everything.${NC}"
+    echo -e "  ${BOLD}Reboot now to activate:${NC}"
+    echo -e "    ${CYAN}•${NC} systemd-boot + dracut initramfs"
+    echo -e "    ${CYAN}•${NC} KDE Plasma desktop with your panels"
+    echo -e "    ${CYAN}•${NC} All dev tools and configs"
+    echo ""
+    echo -e "  ${YELLOW}sudo reboot${NC}"
+    echo ""
 else
     echo ""
     warn "Restore finished with exit code ${EXIT_CODE}. Check the log for details."
+    warn "Most errors are non-blocking — your environment is likely still usable."
 fi
 
 exit $EXIT_CODE

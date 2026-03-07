@@ -646,6 +646,20 @@ if echo "$DE" | grep -qi "kde\|plasma"; then
             cp -a "$HOME/.local/share/$d" "${STAGING_DIR}/configs/desktop/kde-local-share/" 2>/dev/null
     done
 
+    # kscreen output/display mapping (ties panels to monitor IDs)
+    if [ -d "$HOME/.local/share/kscreen" ]; then
+        cp -a "$HOME/.local/share/kscreen" "${STAGING_DIR}/configs/desktop/kde-local-share/" 2>/dev/null
+        log "  kscreen display mapping captured"
+    fi
+
+    # Plasma layout templates (custom panel layouts)
+    if [ -d "$HOME/.local/share/plasma/layout-templates" ]; then
+        mkdir -p "${STAGING_DIR}/configs/desktop/kde-local-share/plasma"
+        cp -a "$HOME/.local/share/plasma/layout-templates" \
+            "${STAGING_DIR}/configs/desktop/kde-local-share/plasma/" 2>/dev/null
+        log "  Plasma layout templates captured"
+    fi
+
     log "  ${KDE_COUNT} KDE config files captured"
 fi
 
@@ -694,6 +708,7 @@ fi
 echo "session_type=${XDG_SESSION_TYPE:-unknown}" > "${STAGING_DIR}/configs/desktop/session-info.txt"
 echo "desktop=${DE}" >> "${STAGING_DIR}/configs/desktop/session-info.txt"
 echo "display_manager=$(cat /etc/X11/default-display-manager 2>/dev/null || echo 'unknown')" >> "${STAGING_DIR}/configs/desktop/session-info.txt"
+echo "wayland=$([ "${XDG_SESSION_TYPE:-}" = "wayland" ] && echo "yes" || echo "no")" >> "${STAGING_DIR}/configs/desktop/session-info.txt"
 
 # --- 21. System Info Snapshot -------------------------------------------------
 hdr "System Info"

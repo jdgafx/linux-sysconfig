@@ -88,8 +88,8 @@ echo ""
 echo -e "${CYAN}${BOLD}"
 cat <<'BANNER'
   ╔══════════════════════════════════════════════════════════════╗
-  ║            Linux Sysconfig Restore v2.0                     ║
-  ║            Universal • Resilient • Automated                ║
+  ║            Linux Sysconfig Restore v3.0                     ║
+  ║      Universal • Resilient • Desktop • Boot Manager         ║
   ╚══════════════════════════════════════════════════════════════╝
 BANNER
 echo -e "${NC}"
@@ -158,6 +158,7 @@ pkg_translate() {
         dnf|yum)
             case "$deb_pkg" in
                 build-essential) echo "@development-tools" ;;
+                systemd-boot) echo "systemd-boot-unsigned" ;;
                 python3-dev) echo "python3-devel" ;;
                 libssl-dev) echo "openssl-devel" ;;
                 libffi-dev) echo "libffi-devel" ;;
@@ -187,6 +188,8 @@ pkg_translate() {
         pacman)
             case "$deb_pkg" in
                 build-essential) echo "base-devel" ;;
+                systemd-boot) echo "systemd" ;;
+                dracut) echo "dracut" ;;
                 python3) echo "python" ;;
                 python3-pip) echo "python-pip" ;;
                 python3-dev) echo "python" ;;
@@ -490,7 +493,7 @@ hdr "PHASE 1: System Packages & Repos"
 # --- 1a. Essential tools first ------------------------------------------------
 log "Installing essential tools..."
 pkg_update
-ESSENTIAL_PKGS=(curl wget git build-essential ca-certificates gnupg zstd jq python3 python3-pip python3-venv dracut)
+ESSENTIAL_PKGS=(curl wget git build-essential ca-certificates gnupg zstd jq python3 python3-pip python3-venv sqlite3)
 ESSENTIAL_NATIVE=()
 for ep in "${ESSENTIAL_PKGS[@]}"; do
     translated=$(pkg_translate "$ep")
@@ -1414,6 +1417,54 @@ if [ -f "$BACKUP_DIR/manifests/systemd-user-enabled.txt" ] && [ -s "$BACKUP_DIR/
     fi
 fi
 
+# --- KDE Panel Fixup Helper ---------------------------------------------------
+# Remaps activity IDs and screen mappings so panels actually appear on new hardware
+_kde_fixup_panels() {
+    local home="$1"
+    local appletsrc="$home/.config/plasma-org.kde.plasma.desktop-appletsrc"
+    [ -f "$appletsrc" ] || return 0
+
+    log "  Fixing KDE panel activity IDs and screen mapping..."
+
+    # Get the current machine's default activity ID
+    local new_activity=""
+    if [ -f "$home/.local/share/kactivitymanagerd/resources/database" ]; then
+        # SQLite database has activity info
+        new_activity=$(sqlite3 "$home/.local/share/kactivitymanagerd/resources/database" \
+            "SELECT resourceId FROM ResourceInfo LIMIT 1" 2>/dev/null || true)
+    fi
+    if [ -z "$new_activity" ] && command -v qdbus6 &>/dev/null; then
+        new_activity=$(as_user "qdbus6 org.kde.ActivityManager /ActivityManager/Activities ListActivities 2>/dev/null | head -1" 2>/dev/null || true)
+    fi
+    if [ -z "$new_activity" ] && command -v qdbus &>/dev/null; then
+        new_activity=$(as_user "qdbus org.kde.ActivityManager /ActivityManager/Activities ListActivities 2>/dev/null | head -1" 2>/dev/null || true)
+    fi
+
+    # Extract the old activity ID from the config
+    local old_activity
+    old_activity=$(grep -m1 '^activityId=' "$appletsrc" | head -1 | cut -d= -f2)
+
+    if [ -n "$new_activity" ] && [ -n "$old_activity" ] && [ "$new_activity" != "$old_activity" ]; then
+        sed -i "s/${old_activity}/${new_activity}/g" "$appletsrc" 2>>"$LOGFILE" || true
+        log "  Remapped activity: ${old_activity} -> ${new_activity}"
+    elif [ -z "$new_activity" ] && [ -n "$old_activity" ]; then
+        # No activity manager running (fresh install, not in KDE session yet)
+        # Clear activity IDs so Plasma assigns the default on first login
+        sed -i 's/^activityId=.*/activityId=/' "$appletsrc" 2>>"$LOGFILE" || true
+        log "  Cleared activity IDs (will auto-assign on first login)"
+    fi
+
+    # Reset screen mapping section — let Plasma figure it out for new hardware
+    sed -i '/^\[ScreenMapping\]/,/^$/{ /^\[ScreenMapping\]/!{ /^$/!s/.*// }; }' "$appletsrc" 2>>"$LOGFILE" || true
+
+    # Force all panels to lastScreen=0 so at least they show up on primary monitor
+    # (user can drag them to other screens after login)
+    sed -i '/^\[Containments\]\[[0-9]*\]$/,/^\[/ { s/^lastScreen=[0-9]*/lastScreen=0/ }' "$appletsrc" 2>>"$LOGFILE" || true
+    log "  Reset screen mappings to primary display"
+
+    ok "KDE panel config adapted for new machine"
+}
+
 # --- 5e. Desktop Environment Config -------------------------------------------
 hdr "Desktop Environment Config"
 if [ -d "$BACKUP_DIR/configs/desktop" ]; then
@@ -1430,9 +1481,30 @@ if [ -d "$BACKUP_DIR/configs/desktop" ]; then
         # KDE Plasma configs
         if [ -d "$BACKUP_DIR/configs/desktop/kde-config" ]; then
             log "  Restoring KDE Plasma configs..."
-            # Stop plasmashell briefly to avoid conflicts
-            as_user "kquitapp6 plasmashell" >>"$LOGFILE" 2>&1 || \
-                as_user "kquitapp5 plasmashell" >>"$LOGFILE" 2>&1 || true
+            # Detect display server (Wayland vs X11)
+            SESSION_TYPE="${XDG_SESSION_TYPE:-$(loginctl show-session "$(loginctl | grep "$TARGET_USER" | awk '{print $1}')" -p Type --value 2>/dev/null || echo "unknown")}"
+            log "  Session type: ${SESSION_TYPE}"
+
+            # Stop plasmashell to avoid conflicts and cached defaults
+            if [ "$SESSION_TYPE" = "wayland" ]; then
+                # On Wayland, kquitapp6 may not find the service — use dbus directly
+                as_user "kquitapp6 plasmashell" >>"$LOGFILE" 2>&1 || \
+                    as_user "dbus-send --session --dest=org.kde.plasmashell --type=method_call /MainApplication org.qtproject.Qt.QCoreApplication.quit" >>"$LOGFILE" 2>&1 || true
+            else
+                as_user "kquitapp6 plasmashell" >>"$LOGFILE" 2>&1 || \
+                    as_user "kquitapp5 plasmashell" >>"$LOGFILE" 2>&1 || true
+            fi
+            sleep 2
+
+            # Nuke Plasma cache so it doesn't use stale/default panel layout
+            for cachedir in "$TARGET_HOME/.cache/plasmashell" \
+                            "$TARGET_HOME/.cache/plasma_theme_"* \
+                            "$TARGET_HOME/.cache/plasma-svgelements"* \
+                            "$TARGET_HOME/.cache/ksycoca6"* \
+                            "$TARGET_HOME/.cache/ksycoca5"*; do
+                rm -rf "$cachedir" 2>/dev/null || true
+            done
+            log "  Cleared Plasma caches"
 
             for f in "$BACKUP_DIR/configs/desktop/kde-config"/*; do
                 fname=$(basename "$f")
@@ -1443,10 +1515,25 @@ if [ -d "$BACKUP_DIR/configs/desktop" ]; then
                     cp "$f" "$TARGET_HOME/.config/" 2>>"$LOGFILE" || true
                 fi
             done
+            chown -R "$TARGET_USER:$(id -gn "$TARGET_USER")" "$TARGET_HOME/.config" 2>>"$LOGFILE" || true
+
+            # Remap activity IDs and screen mappings for new hardware
+            _kde_fixup_panels "$TARGET_HOME"
             ok "KDE rc files restored"
 
-            # Restart plasmashell
-            as_user "nohup plasmashell --replace >/dev/null 2>&1 &" >>"$LOGFILE" 2>&1 || true
+            # Rebuild KDE sycoca cache with the new configs
+            as_user "kbuildsycoca6 2>/dev/null || kbuildsycoca5 2>/dev/null" >>"$LOGFILE" 2>&1 || true
+
+            # Restart plasmashell with restored config
+            sleep 1
+            if [ "$SESSION_TYPE" = "wayland" ]; then
+                # On Wayland, plasmashell is managed by kwin_wayland — just start it
+                as_user "nohup plasmashell >/dev/null 2>&1 &" >>"$LOGFILE" 2>&1 || true
+            else
+                as_user "nohup plasmashell --replace >/dev/null 2>&1 &" >>"$LOGFILE" 2>&1 || true
+            fi
+            log "  Plasmashell restarted (${SESSION_TYPE}) — panels should appear within a few seconds"
+            log "  If panels still missing, log out and back in to apply fully"
         fi
 
         # KDE local share (konsole profiles, color schemes, themes)
@@ -1509,19 +1596,79 @@ if [ -d "$BACKUP_DIR/configs/desktop" ]; then
 
         # Install the captured DE if not already present
         CURRENT_DE="${XDG_CURRENT_DESKTOP:-unknown}"
+        KDE_FRESHLY_INSTALLED=false
         if [ "$CURRENT_DE" = "unknown" ] || [ "$CURRENT_DE" != "$CAPTURED_DE" ]; then
             if echo "$CAPTURED_DE" | grep -qi "kde\|plasma"; then
-                log "  Installing KDE Plasma desktop..."
-                pkg_install "$(pkg_translate 'kde-plasma-desktop')" "$(pkg_translate 'sddm')" \
-                    "$(pkg_translate 'konsole')" "$(pkg_translate 'dolphin')" "$(pkg_translate 'kate')" \
-                    >>"$LOGFILE" 2>&1 || track_failure "kde-install"
+                log "  Installing full KDE Plasma desktop environment..."
+
+                # Core desktop + essential KDE apps for a complete, usable desktop
+                KDE_PKGS_DEB=(
+                    kde-plasma-desktop plasma-workspace sddm sddm-theme-breeze
+                    konsole dolphin kate ark okular gwenview spectacle
+                    plasma-systemmonitor plasma-nm plasma-pa plasma-firewall
+                    kde-spectacle kscreen kwin-wayland kwin-x11
+                    breeze-gtk-theme kde-config-gtk-style
+                    xdg-desktop-portal-kde pipewire wireplumber
+                    phonon4qt5-backend-vlc
+                    plasma-discover flatpak-backend
+                    powerdevil bluedevil
+                )
+                log "  Installing ${#KDE_PKGS_DEB[@]} KDE packages..."
+                KDE_NATIVE=()
+                for kp in "${KDE_PKGS_DEB[@]}"; do
+                    kp_translated=$(pkg_translate "$kp")
+                    [ -n "$kp_translated" ] && KDE_NATIVE+=("$kp_translated")
+                done
+                pkg_install_batch "${KDE_NATIVE[@]}" >>"$LOGFILE" 2>&1 || {
+                    warn "Batch KDE install had errors, retrying core packages individually..."
+                    for kp in kde-plasma-desktop sddm konsole dolphin kate kwin-wayland kscreen; do
+                        pkg_install_one "$(pkg_translate "$kp")" >>"$LOGFILE" 2>&1 || true
+                    done
+                }
+
                 # Set SDDM as default display manager
                 if command -v update-alternatives &>/dev/null; then
                     update-alternatives --set x-display-manager /usr/bin/sddm 2>>"$LOGFILE" || true
                 fi
                 systemctl enable sddm 2>>"$LOGFILE" || true
-                ok "KDE Plasma installed & SDDM enabled"
+                KDE_FRESHLY_INSTALLED=true
+                ok "KDE Plasma desktop fully installed & SDDM enabled"
             fi
+        fi
+
+        # CRITICAL: Re-apply KDE configs AFTER install
+        # KDE package install drops default configs that overwrite what we restored above.
+        # Re-copy the panel/desktop configs so they survive first login.
+        if $KDE_FRESHLY_INSTALLED && [ -d "$BACKUP_DIR/configs/desktop/kde-config" ]; then
+            log "  Re-applying KDE configs after fresh install (overriding package defaults)..."
+            # Nuke any defaults the package install just created
+            rm -f "$TARGET_HOME/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
+            rm -f "$TARGET_HOME/.config/plasmashellrc" 2>/dev/null || true
+            rm -rf "$TARGET_HOME/.cache/plasmashell" 2>/dev/null || true
+            rm -rf "$TARGET_HOME/.cache/ksycoca6"* "$TARGET_HOME/.cache/ksycoca5"* 2>/dev/null || true
+
+            for f in "$BACKUP_DIR/configs/desktop/kde-config"/*; do
+                fname=$(basename "$f")
+                if [ -d "$f" ]; then
+                    mkdir -p "$TARGET_HOME/.config/$fname"
+                    cp -a "$f"/* "$TARGET_HOME/.config/$fname/" 2>>"$LOGFILE" || true
+                else
+                    cp "$f" "$TARGET_HOME/.config/" 2>>"$LOGFILE" || true
+                fi
+            done
+            # Re-apply local share (konsole, kscreen, themes)
+            if [ -d "$BACKUP_DIR/configs/desktop/kde-local-share" ]; then
+                for d in "$BACKUP_DIR/configs/desktop/kde-local-share"/*; do
+                    dname=$(basename "$d")
+                    mkdir -p "$TARGET_HOME/.local/share/$dname"
+                    cp -a "$d"/* "$TARGET_HOME/.local/share/$dname/" 2>>"$LOGFILE" || true
+                done
+            fi
+            # Remap activity IDs and screen mappings for new machine
+            _kde_fixup_panels "$TARGET_HOME"
+            chown -R "$TARGET_USER:$(id -gn "$TARGET_USER")" \
+                "$TARGET_HOME/.config" "$TARGET_HOME/.local/share" 2>>"$LOGFILE" || true
+            ok "KDE panel & desktop configs re-applied after package install"
         fi
     fi
 else
@@ -1543,6 +1690,98 @@ else
     chmod 700 "$TARGET_HOME/.ssh" 2>/dev/null || true
     find "$TARGET_HOME/.ssh" -type f -name "*.pub" -exec chmod 644 {} \; 2>/dev/null || true
     find "$TARGET_HOME/.ssh" -type f ! -name "*.pub" ! -name "known_hosts*" ! -name "config" -exec chmod 600 {} \; 2>/dev/null || true
+fi
+
+# =============================================================================
+#  PHASE 7: Boot Manager — systemd-boot + dracut
+# =============================================================================
+hdr "PHASE 7: Boot Manager (systemd-boot + dracut)"
+if $DRY_RUN; then
+    log "  [DRY RUN] Would install systemd-boot and dracut"
+    log "  [DRY RUN] Would set boot menu timeout to 60s"
+    log "  [DRY RUN] Would regenerate initramfs with dracut"
+else
+    # Install dracut (replaces initramfs-tools on Debian/Ubuntu)
+    log "Installing dracut and boot dependencies..."
+    BOOT_PKGS_DEB=(dracut systemd-boot binutils)
+    BOOT_NATIVE=()
+    for bp in "${BOOT_PKGS_DEB[@]}"; do
+        bp_translated=$(pkg_translate "$bp")
+        [ -n "$bp_translated" ] && BOOT_NATIVE+=("$bp_translated")
+    done
+    pkg_install_batch "${BOOT_NATIVE[@]}" >>"$LOGFILE" 2>&1 || {
+        # Retry individually
+        for bp in "${BOOT_PKGS_DEB[@]}"; do
+            pkg_install_one "$(pkg_translate "$bp")" >>"$LOGFILE" 2>&1 || true
+        done
+    }
+
+    # Verify dracut is available
+    if command -v dracut &>/dev/null; then
+        ok "dracut installed: $(dracut --version 2>/dev/null || echo 'ok')"
+
+        # Install systemd-boot to the ESP if EFI system detected
+        if [ -d /sys/firmware/efi ]; then
+            log "  EFI system detected — configuring systemd-boot..."
+
+            # Find the EFI System Partition
+            ESP=""
+            for candidate in /boot/efi /efi /boot; do
+                if mountpoint -q "$candidate" 2>/dev/null && \
+                   find "$candidate" -maxdepth 1 -name "EFI" -type d 2>/dev/null | grep -q .; then
+                    ESP="$candidate"
+                    break
+                fi
+            done
+            # Fallback: check fstab
+            if [ -z "$ESP" ]; then
+                ESP=$(grep -E 'vfat.*(boot|efi)' /etc/fstab 2>/dev/null | awk '{print $2}' | head -1)
+                [ -n "$ESP" ] && mountpoint -q "$ESP" 2>/dev/null || { [ -n "$ESP" ] && mount "$ESP" 2>>"$LOGFILE" || true; }
+            fi
+
+            if [ -n "$ESP" ]; then
+                log "  ESP found at: ${ESP}"
+
+                # Install systemd-boot bootloader
+                bootctl install --esp-path="$ESP" >>"$LOGFILE" 2>&1 || \
+                    bootctl update --esp-path="$ESP" >>"$LOGFILE" 2>&1 || \
+                    track_failure "systemd-boot-install"
+                ok "systemd-boot installed to ${ESP}"
+
+                # Set boot menu timeout to 60 seconds
+                bootctl set-timeout 60 --esp-path="$ESP" >>"$LOGFILE" 2>&1 || {
+                    # Fallback: write loader.conf manually
+                    mkdir -p "${ESP}/loader"
+                    cat > "${ESP}/loader/loader.conf" <<'LOADERCONF'
+timeout 60
+console-mode max
+editor yes
+LOADERCONF
+                    log "  Wrote loader.conf manually"
+                }
+                ok "Boot menu timeout set to 60 seconds"
+            else
+                warn "Could not find EFI System Partition — skipping systemd-boot install"
+                warn "You may need to install manually: bootctl install --esp-path=/boot/efi"
+            fi
+        else
+            warn "Not an EFI system (legacy BIOS) — skipping systemd-boot"
+        fi
+
+        # Regenerate initramfs with dracut
+        log "  Regenerating initramfs with dracut (this may take a minute)..."
+        dracut -f --uefi --parallel --regenerate-all --hardlink --early-microcode -M --verbose \
+            >>"$LOGFILE" 2>&1 || {
+            # Retry without --uefi if not on EFI
+            warn "dracut --uefi failed, retrying without --uefi..."
+            dracut -f --parallel --regenerate-all --hardlink --early-microcode -M --verbose \
+                >>"$LOGFILE" 2>&1 || track_failure "dracut-regenerate"
+        }
+        ok "initramfs regenerated with dracut"
+    else
+        warn "dracut not available after install — initramfs not regenerated"
+        warn "You can regenerate manually: dracut -f --uefi --parallel --regenerate-all --hardlink --early-microcode -M --verbose"
+    fi
 fi
 
 # =============================================================================
@@ -1587,12 +1826,28 @@ BANNER
     fi
 
     echo ""
+    echo -e "  ${CYAN}─────────────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}What was installed:${NC}"
+    echo -e "    ${GREEN}✓${NC} System packages (${PKG_MANAGER})"
+    echo -e "    ${GREEN}✓${NC} Dev toolchains (Node/NVM, Bun, pnpm, uv, pip)"
+    echo -e "    ${GREEN}✓${NC} AI tools (Claude Code, claude-flow, OpenCode)"
+    echo -e "    ${GREEN}✓${NC} Shell config (.bashrc, .bashrc.d/, SSH keys)"
+    echo -e "    ${GREEN}✓${NC} Desktop environment (KDE Plasma + panels)"
+    echo -e "    ${GREEN}✓${NC} Boot manager (systemd-boot + dracut)"
+    echo -e "    ${GREEN}✓${NC} Dev repos cloned to ~/dev/"
+    echo -e "  ${CYAN}─────────────────────────────────────────────────────${NC}"
+    echo ""
     echo -e "${BOLD}Next steps:${NC}"
-    echo -e "  1. ${CYAN}Log out and back in${NC} (or run: source ~/.bashrc)"
-    echo -e "  2. ${CYAN}tailscale up${NC} — to reconnect Tailscale"
-    echo -e "  3. ${CYAN}rclone config reconnect gdrive:${NC} — if Google Drive auth expired"
-    echo -e "  4. ${CYAN}claude${NC} — to re-authenticate Claude Code"
-    echo -e "  5. ${CYAN}gh auth login${NC} — if GitHub CLI needs re-auth"
+    echo -e "  1. ${CYAN}Reboot${NC} — to activate systemd-boot + new initramfs"
+    echo -e "  2. ${CYAN}Log into KDE Plasma${NC} — panels should load automatically"
+    echo -e "  3. ${CYAN}tailscale up${NC} — reconnect Tailscale VPN"
+    echo -e "  4. ${CYAN}rclone config reconnect gdrive:${NC} — if Google Drive auth expired"
+    echo -e "  5. ${CYAN}claude${NC} — to re-authenticate Claude Code"
+    echo -e "  6. ${CYAN}gh auth login${NC} — if GitHub CLI needs re-auth"
+    echo ""
+    echo -e "  ${YELLOW}If KDE panels are missing after login:${NC}"
+    echo -e "    ${CYAN}rm -rf ~/.cache/plasmashell ~/.cache/ksycoca6*${NC}"
+    echo -e "    ${CYAN}kquitapp6 plasmashell; sleep 2; plasmashell &${NC}"
     echo ""
     echo -e "${GREEN}${BOLD}Your dev environment is ready!${NC}"
 fi
