@@ -1665,6 +1665,66 @@ if [ -d "$BACKUP_DIR/configs/desktop" ]; then
                 "$TARGET_HOME/.config" "$TARGET_HOME/.local/share" 2>>"$LOGFILE" || true
             ok "KDE panel & desktop configs re-applied after package install"
         fi
+
+        # Create a KDE autostart script that nukes cache + restarts plasmashell
+        # on the FIRST login after restore. Plasma re-generates stale defaults
+        # during login which override our restored configs — this script fires
+        # after the session starts, kills the default shell, nukes cache, and
+        # relaunches with the restored config. It then deletes itself.
+        log "  Creating first-login panel fix autostart script..."
+        mkdir -p "$TARGET_HOME/.config/autostart"
+        cat > "$TARGET_HOME/.config/autostart/sysconfig-panel-fix.desktop" <<'AUTOSTART_DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Sysconfig Panel Fix
+Comment=One-time KDE panel cache reset after sysconfig restore
+Exec=/bin/bash -c "$HOME/.local/bin/sysconfig-panel-fix.sh"
+X-KDE-autostart-phase=2
+X-KDE-autostart-after=panel
+OnlyShowIn=KDE;
+AUTOSTART_DESKTOP
+
+        mkdir -p "$TARGET_HOME/.local/bin"
+        cat > "$TARGET_HOME/.local/bin/sysconfig-panel-fix.sh" <<'PANEL_FIX_SCRIPT'
+#!/usr/bin/env bash
+# One-shot: nuke plasma cache + restart plasmashell after sysconfig restore
+# Runs once on first login, then deletes itself
+
+sleep 5  # Let Plasma finish initial load
+
+# Kill current plasmashell
+kquitapp6 plasmashell 2>/dev/null || \
+    dbus-send --session --dest=org.kde.plasmashell --type=method_call \
+    /MainApplication org.qtproject.Qt.QCoreApplication.quit 2>/dev/null || \
+    killall plasmashell 2>/dev/null
+sleep 2
+
+# Nuke ALL plasma caches
+rm -rf ~/.cache/plasmashell 2>/dev/null
+rm -rf ~/.cache/plasma_theme_* 2>/dev/null
+rm -rf ~/.cache/plasma-svgelements* 2>/dev/null
+rm -f ~/.cache/ksycoca6* 2>/dev/null
+rm -f ~/.cache/ksycoca5* 2>/dev/null
+rm -rf ~/.cache/ksvg-elements* 2>/dev/null
+rm -rf ~/.cache/kwin 2>/dev/null
+
+# Rebuild sycoca
+kbuildsycoca6 2>/dev/null || kbuildsycoca5 2>/dev/null
+
+# Restart plasmashell with clean state
+sleep 1
+nohup plasmashell >/dev/null 2>&1 &
+
+# Self-destruct — only needed once
+rm -f ~/.config/autostart/sysconfig-panel-fix.desktop
+rm -f ~/.local/bin/sysconfig-panel-fix.sh
+PANEL_FIX_SCRIPT
+
+        chmod +x "$TARGET_HOME/.local/bin/sysconfig-panel-fix.sh"
+        chown -R "$TARGET_USER:$(id -gn "$TARGET_USER")" \
+            "$TARGET_HOME/.config/autostart/sysconfig-panel-fix.desktop" \
+            "$TARGET_HOME/.local/bin/sysconfig-panel-fix.sh" 2>>"$LOGFILE" || true
+        ok "First-login autostart panel fix script installed (self-deletes after use)"
     fi
 else
     log "  No desktop config in backup — skipping"
