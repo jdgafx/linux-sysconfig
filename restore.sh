@@ -1823,15 +1823,18 @@ LOADERCONF
             warn "Not an EFI system (legacy BIOS) — skipping systemd-boot"
         fi
 
-        # Regenerate initramfs with dracut
-        log "  Regenerating initramfs with dracut (this may take a minute)..."
+        # Regenerate initramfs with dracut — show FULL verbose output on screen
+        log "  Regenerating initramfs with dracut (verbose output follows)..."
+        echo -e "${CYAN}${BOLD}─── dracut initramfs generation ───${NC}"
         dracut -f --uefi --parallel --regenerate-all --hardlink --early-microcode -M --verbose \
-            >>"$LOGFILE" 2>&1 || {
+            2>&1 | tee -a "$LOGFILE" || {
             # Retry without --uefi if not on EFI
             warn "dracut --uefi failed, retrying without --uefi..."
+            echo -e "${CYAN}${BOLD}─── dracut retry (no --uefi) ───${NC}"
             dracut -f --parallel --regenerate-all --hardlink --early-microcode -M --verbose \
-                >>"$LOGFILE" 2>&1 || track_failure "dracut-regenerate"
+                2>&1 | tee -a "$LOGFILE" || track_failure "dracut-regenerate"
         }
+        echo -e "${CYAN}${BOLD}─── dracut complete ───${NC}"
         ok "initramfs regenerated with dracut"
     else
         warn "dracut not available after install — initramfs not regenerated"
