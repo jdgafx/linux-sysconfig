@@ -1208,9 +1208,31 @@ else
         command -v google-chrome &>/dev/null && ok "Google Chrome installed"
     fi
 
-    # Chrome Canary — does NOT exist as a Linux package (only Windows/Mac)
-    # Skip install entirely. Only restore bookmarks if the user manually installed it.
-    log "  Chrome Canary: skipped (not available for Linux)"
+    # Chrome Canary (separate repo + signing key required)
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        if ! dpkg -l google-chrome-canary &>/dev/null 2>&1; then
+            log "  Installing Chrome Canary..."
+            # Add the Canary repo and signing key if not already present
+            if [ ! -f /etc/apt/sources.list.d/google-chrome-canary.sources ] && \
+               [ ! -f /etc/apt/sources.list.d/google-chrome-canary.list ]; then
+                # Try restoring from backup first (keyrings + sources captured by capture.sh)
+                if [ -f "$BACKUP_DIR/keyrings/google-chrome-canary.gpg" ]; then
+                    cp "$BACKUP_DIR/keyrings/google-chrome-canary.gpg" /usr/share/keyrings/ 2>>"$LOGFILE" || true
+                else
+                    wget -qO- https://dl.google.com/linux/linux_signing_key.pub | \
+                        gpg --dearmor -o /usr/share/keyrings/google-chrome-canary.gpg 2>>"$LOGFILE" || true
+                fi
+                echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-canary.gpg] https://dl.google.com/linux/chrome-canary/deb/ stable main" \
+                    > /etc/apt/sources.list.d/google-chrome-canary.list 2>>"$LOGFILE" || true
+                apt-get update -qq 2>>"$LOGFILE" || true
+            fi
+            DEBIAN_FRONTEND=noninteractive apt-get install -y google-chrome-canary >>"$LOGFILE" 2>&1 || \
+                track_failure "chrome-canary"
+            command -v google-chrome-canary &>/dev/null && ok "Chrome Canary installed"
+        else
+            log "  Chrome Canary already installed"
+        fi
+    fi
 
     # Restore browser bookmarks/prefs (only for browsers that are actually installed)
     for browser in google-chrome google-chrome-canary; do
