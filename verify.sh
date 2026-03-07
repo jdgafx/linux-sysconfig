@@ -52,7 +52,7 @@ echo ""
 echo -e "${CYAN}${BOLD}"
 cat <<'BANNER'
   ╔══════════════════════════════════════════════════════════════╗
-  ║            Linux Sysconfig Verify v2.0                      ║
+  ║            Linux Sysconfig Verify v3.0                      ║
   ║            Integrity • Inspection • Diff                    ║
   ╚══════════════════════════════════════════════════════════════╝
 BANNER

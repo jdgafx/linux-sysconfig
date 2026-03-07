@@ -115,7 +115,7 @@ echo ""
 echo -e "${CYAN}${BOLD}"
 cat <<'BANNER'
   ╔══════════════════════════════════════════════════════════════╗
-  ║            Linux Sysconfig Capture v2.0                     ║
+  ║            Linux Sysconfig Capture v3.0                     ║
   ║            Universal • Encrypted • Portable                 ║
   ╚══════════════════════════════════════════════════════════════╝
 BANNER
