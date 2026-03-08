@@ -1315,6 +1315,101 @@ if [ -d "$BACKUP_DIR/configs/fish" ]; then
     fi
 fi
 
+# --- 4j. Additional Tool Configs ----------------------------------------------
+hdr "Additional Tool Configs"
+if ! $DRY_RUN; then
+    # Configstore (firebase-tools, netlify update notifier)
+    if [ -d "$BACKUP_DIR/configs/configstore" ]; then
+        mkdir -p "$TARGET_HOME/.config/configstore"
+        cp -a "$BACKUP_DIR/configs/configstore/"* "$TARGET_HOME/.config/configstore/" 2>/dev/null
+        log "  configstore restored"
+    fi
+
+    # Netlify CLI config
+    if [ -d "$BACKUP_DIR/configs/netlify" ]; then
+        mkdir -p "$TARGET_HOME/.config/netlify"
+        cp -a "$BACKUP_DIR/configs/netlify/"* "$TARGET_HOME/.config/netlify/" 2>/dev/null
+        log "  netlify CLI config restored"
+    fi
+
+    # OBS Studio config
+    if [ -d "$BACKUP_DIR/configs/obs-studio" ]; then
+        mkdir -p "$TARGET_HOME/.config/obs-studio"
+        cp -a "$BACKUP_DIR/configs/obs-studio/"* "$TARGET_HOME/.config/obs-studio/" 2>/dev/null
+        log "  obs-studio config restored"
+    fi
+
+    # Kate editor config
+    if [ -d "$BACKUP_DIR/configs/kate" ]; then
+        mkdir -p "$TARGET_HOME/.config/kate"
+        cp -a "$BACKUP_DIR/configs/kate/"* "$TARGET_HOME/.config/kate/" 2>/dev/null
+        log "  kate editor config restored"
+    fi
+    [ -f "$BACKUP_DIR/configs/katerc" ] && cp "$BACKUP_DIR/configs/katerc" "$TARGET_HOME/.config/" 2>/dev/null
+    [ -f "$BACKUP_DIR/configs/katevirc" ] && cp "$BACKUP_DIR/configs/katevirc" "$TARGET_HOME/.config/" 2>/dev/null
+
+    # Kitty terminal config
+    if [ -d "$BACKUP_DIR/configs/kitty" ]; then
+        mkdir -p "$TARGET_HOME/.config/kitty"
+        cp -a "$BACKUP_DIR/configs/kitty/"* "$TARGET_HOME/.config/kitty/" 2>/dev/null
+        log "  kitty terminal config restored"
+    fi
+
+    # ClaweHub config
+    if [ -d "$BACKUP_DIR/configs/clawhub" ]; then
+        mkdir -p "$TARGET_HOME/.config/clawhub"
+        cp -a "$BACKUP_DIR/configs/clawhub/"* "$TARGET_HOME/.config/clawhub/" 2>/dev/null
+        log "  clawhub config restored"
+    fi
+
+    # Custom .desktop app launchers
+    if [ -d "$BACKUP_DIR/configs/desktop-applications" ]; then
+        mkdir -p "$TARGET_HOME/.local/share/applications"
+        cp -a "$BACKUP_DIR/configs/desktop-applications/"* "$TARGET_HOME/.local/share/applications/" 2>/dev/null
+        log "  custom .desktop app launchers restored"
+    fi
+
+    # Konsole profiles & color schemes
+    if [ -d "$BACKUP_DIR/configs/konsole-profiles" ]; then
+        mkdir -p "$TARGET_HOME/.local/share/konsole"
+        cp -a "$BACKUP_DIR/configs/konsole-profiles/"* "$TARGET_HOME/.local/share/konsole/" 2>/dev/null
+        log "  konsole profiles & color schemes restored"
+    fi
+
+    # Chrome / Canary extensions list (show user what to reinstall)
+    for browser in google-chrome google-chrome-canary; do
+        ext_list="$BACKUP_DIR/configs/$browser/extensions-list.txt"
+        if [ -f "$ext_list" ] && [ -s "$ext_list" ]; then
+            ext_count=$(wc -l < "$ext_list")
+            log "  ${browser}: ${ext_count} extensions to reinstall manually:"
+            while IFS='|' read -r ext_id ext_name; do
+                log "    - ${ext_name} (${ext_id})"
+            done < "$ext_list"
+        fi
+    done
+
+    # Fix ownership for all restored configs
+    chown -R "$TARGET_USER:$(id -gn "$TARGET_USER")" \
+        "$TARGET_HOME/.config/configstore" \
+        "$TARGET_HOME/.config/netlify" \
+        "$TARGET_HOME/.config/obs-studio" \
+        "$TARGET_HOME/.config/kate" \
+        "$TARGET_HOME/.config/kitty" \
+        "$TARGET_HOME/.config/clawhub" \
+        "$TARGET_HOME/.local/share/applications" \
+        "$TARGET_HOME/.local/share/konsole" \
+        2>/dev/null || true
+    ok "Additional tool configs restored"
+else
+    extra_configs=0
+    for d in configstore netlify obs-studio kate kitty clawhub; do
+        [ -d "$BACKUP_DIR/configs/$d" ] && extra_configs=$((extra_configs + 1))
+    done
+    [ -d "$BACKUP_DIR/configs/desktop-applications" ] && extra_configs=$((extra_configs + 1))
+    [ -d "$BACKUP_DIR/configs/konsole-profiles" ] && extra_configs=$((extra_configs + 1))
+    log "  [DRY RUN] Would restore ${extra_configs} additional tool configs"
+fi
+
 # =============================================================================
 #  PHASE 5: CLAUDE.md & Dev Repos
 # =============================================================================

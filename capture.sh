@@ -561,19 +561,56 @@ log "Scanning ~/dev for git repos..."
 } > "${STAGING_DIR}/manifests/dev-repos.txt"
 log "  $(grep -c '|' "${STAGING_DIR}/manifests/dev-repos.txt") repos cataloged"
 
-# --- 16b. Dev Directory Full Backup ------------------------------------------
-hdr "Dev Directory Full Backup"
-DEV_DATA_TARBALL="${HOME}/.cache/sysconfig-capture/${BACKUP_NAME}-dev-data.tar.zst"
+# --- 16b. Push All Dev Repos to GitHub ---------------------------------------
+hdr "Push All Dev Repos to GitHub"
 if [ -d "$HOME/dev" ]; then
-    log "Creating full ~/dev backup (excluding regeneratable dirs)..."
-    log "  This preserves ALL source code, configs, untracked files, and git history."
+    PUSH_OK=0; PUSH_FAIL=0; PUSH_SKIP=0; PUSH_DIRTY=0
+    log "Committing and pushing all repos so restore can clone them..."
+    for d in "$HOME/dev"/*/; do
+        [ ! -d "$d/.git" ] && continue
+        dirname="$(basename "$d")"
+        remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo "")
+
+        # Skip repos without a remote
+        if [ -z "$remote" ] || [ "$remote" = "LOCAL_ONLY" ]; then
+            PUSH_SKIP=$((PUSH_SKIP + 1))
+            continue
+        fi
+
+        # Skip repos we don't own (forks from other orgs)
+        if ! echo "$remote" | grep -qi "jdgafx"; then
+            PUSH_SKIP=$((PUSH_SKIP + 1))
+            continue
+        fi
+
+        # Check for dirty files — commit them
+        dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l)
+        if [ "$dirty" -gt 0 ]; then
+            git -C "$d" add -A 2>/dev/null
+            git -C "$d" commit -m "auto-sync $(date +%Y-%m-%d_%H:%M) — pre-transfer capture" 2>/dev/null || true
+            PUSH_DIRTY=$((PUSH_DIRTY + 1))
+        fi
+
+        # Push using existing git credential helper (configured in dotfiles)
+        if git -C "$d" push --all 2>/dev/null; then
+            PUSH_OK=$((PUSH_OK + 1))
+        else
+            PUSH_FAIL=$((PUSH_FAIL + 1))
+            warn "  Failed to push: ${dirname}"
+        fi
+    done
+    log "  Pushed: ${PUSH_OK} | Committed: ${PUSH_DIRTY} | Skipped: ${PUSH_SKIP} | Failed: ${PUSH_FAIL}"
+    log "  Restore will clone all repos from GitHub — no dev-data tarball needed!"
+fi
+
+# --- 16c. Dev Directory Full Backup (fallback) ------------------------------
+hdr "Dev Directory Full Backup (fallback)"
+DEV_DATA_TARBALL=""
+# Only create dev-data tarball if explicitly requested with --dev-data flag
+if [[ " $* " =~ " --dev-data " ]] && [ -d "$HOME/dev" ]; then
+    DEV_DATA_TARBALL="${HOME}/.cache/sysconfig-capture/${BACKUP_NAME}-dev-data.tar.zst"
+    log "Creating full ~/dev backup (--dev-data flag set)..."
     log "  Excludes: node_modules, __pycache__, .next, venv, .swarm, .claude-flow, target"
-    DEV_RAW_SIZE=$(du -sh "$HOME/dev" \
-        --exclude='node_modules' --exclude='__pycache__' --exclude='.next' \
-        --exclude='venv' --exclude='.venv' --exclude='.swarm' \
-        --exclude='.claude-flow' --exclude='.hive-mind' --exclude='.agent' \
-        --exclude='.claude-code-mux' --exclude='target' 2>/dev/null | cut -f1)
-    log "  Estimated size before compression: ${DEV_RAW_SIZE}"
     tar -C "$HOME" \
         --exclude='node_modules' \
         --exclude='__pycache__' \
@@ -592,7 +629,7 @@ if [ -d "$HOME/dev" ]; then
     DEV_DATA_SIZE=$(du -h "$DEV_DATA_TARBALL" | cut -f1)
     log "  Dev data archive: ${DEV_DATA_TARBALL} (${DEV_DATA_SIZE})"
 else
-    warn "No ~/dev directory found — skipping dev data backup"
+    log "Repos pushed to GitHub — skipping dev-data tarball (use --dev-data to force)"
 fi
 
 # --- 17. Systemd User Services -----------------------------------------------
@@ -629,6 +666,82 @@ done
 
 # Antigravity config
 [ -d "$HOME/.config/Antigravity" ] && cp -a "$HOME/.config/Antigravity" "${STAGING_DIR}/configs/Antigravity" && log "  Antigravity config"
+
+# Configstore (firebase-tools, netlify update notifiers)
+if [ -d "$HOME/.config/configstore" ]; then
+    cp -a "$HOME/.config/configstore" "${STAGING_DIR}/configs/configstore"
+    log "  configstore (firebase, netlify)"
+fi
+
+# Netlify CLI config
+if [ -d "$HOME/.config/netlify" ]; then
+    cp -a "$HOME/.config/netlify" "${STAGING_DIR}/configs/netlify"
+    log "  netlify CLI config"
+fi
+
+# OBS Studio config
+if [ -d "$HOME/.config/obs-studio" ]; then
+    mkdir -p "${STAGING_DIR}/configs/obs-studio"
+    # Copy config but skip large recording/replay buffers
+    rsync -a --exclude='logs' --exclude='crashes' --exclude='plugin_config/obs-browser/Cache' \
+        "$HOME/.config/obs-studio/" "${STAGING_DIR}/configs/obs-studio/"
+    log "  obs-studio config"
+fi
+
+# Kate editor config
+if [ -d "$HOME/.config/kate" ]; then
+    cp -a "$HOME/.config/kate" "${STAGING_DIR}/configs/kate"
+    log "  kate editor config"
+fi
+[ -f "$HOME/.config/katerc" ] && cp "$HOME/.config/katerc" "${STAGING_DIR}/configs/" && log "  katerc"
+[ -f "$HOME/.config/katevirc" ] && cp "$HOME/.config/katevirc" "${STAGING_DIR}/configs/" && log "  katevirc"
+
+# Kitty terminal config
+if [ -d "$HOME/.config/kitty" ]; then
+    cp -a "$HOME/.config/kitty" "${STAGING_DIR}/configs/kitty"
+    log "  kitty terminal config"
+fi
+
+# ClaweHub config
+if [ -d "$HOME/.config/clawhub" ]; then
+    cp -a "$HOME/.config/clawhub" "${STAGING_DIR}/configs/clawhub"
+    log "  clawhub config"
+fi
+
+# Custom .desktop files (user app launchers)
+if [ -d "$HOME/.local/share/applications" ] && [ "$(ls -A "$HOME/.local/share/applications" 2>/dev/null)" ]; then
+    cp -a "$HOME/.local/share/applications" "${STAGING_DIR}/configs/desktop-applications"
+    log "  custom .desktop app launchers"
+fi
+
+# Chrome / Chrome Canary extensions list (for reinstall)
+for browser_dir in "$HOME/.config/google-chrome" "$HOME/.config/google-chrome-canary"; do
+    bname=$(basename "$browser_dir")
+    prefs_file="$browser_dir/Default/Preferences"
+    if [ -f "$prefs_file" ]; then
+        python3 -c "
+import json, sys
+with open('$prefs_file') as f:
+    prefs = json.load(f)
+exts = prefs.get('extensions', {}).get('settings', {})
+for ext_id, info in exts.items():
+    name = info.get('manifest', {}).get('name', 'unknown')
+    loc = info.get('location', 0)
+    # location 1 = webstore, skip built-in (location 0, 5, 10)
+    if loc == 1:
+        print(f'{ext_id}|{name}')
+" > "${STAGING_DIR}/configs/${bname}/extensions-list.txt" 2>/dev/null || true
+        ext_count=$(wc -l < "${STAGING_DIR}/configs/${bname}/extensions-list.txt" 2>/dev/null || echo 0)
+        log "  ${bname} extensions: ${ext_count} user-installed"
+    fi
+done
+
+# Konsole profiles (terminal color schemes + profiles)
+if [ -d "$HOME/.local/share/konsole" ]; then
+    mkdir -p "${STAGING_DIR}/configs/konsole-profiles"
+    cp -a "$HOME/.local/share/konsole/"* "${STAGING_DIR}/configs/konsole-profiles/" 2>/dev/null
+    log "  konsole profiles & color schemes"
+fi
 
 # Tailscale — skip state dir (huge, just run `tailscale up` on new machine)
 command -v tailscale &>/dev/null && log "  Tailscale installed (will reinstall, just run 'tailscale up')"
