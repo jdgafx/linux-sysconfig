@@ -543,30 +543,22 @@ fi
 
 # --- 16. Dev Repo Manifest ---------------------------------------------------
 hdr "Dev Repos Manifest"
-log "Scanning ~/dev for git repos (2 levels deep)..."
+log "Scanning ~/dev for git repos (ALL depths)..."
 {
     echo "# Dev repo manifest — relative_path|remote_url|branch"
     echo "# Generated $(date -Iseconds)"
-    # Level 1: ~/dev/*/
+    # Top-level dirs: mark non-repos so restore can mkdir them
     for d in "$HOME/dev"/*/; do
         [ ! -d "$d" ] && continue
         dirname="$(basename "$d")"
-        if [ -d "$d/.git" ]; then
-            remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo "LOCAL_ONLY")
-            # Strip any embedded tokens from remote URL
-            remote=$(echo "$remote" | sed -E 's|https://[^@]+@github\.com|https://github.com|')
-            branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "main")
-            echo "${dirname}|${remote}|${branch}"
-        else
+        if [ ! -d "$d/.git" ]; then
             echo "${dirname}|NOT_A_REPO|"
         fi
     done
-    # Level 2: ~/dev/*/*/ (nested repos inside umbrella dirs like CUSTOMER_PROJECTS)
-    for d in "$HOME/dev"/*/*/; do
-        [ ! -d "$d/.git" ] && continue
-        parent="$(basename "$(dirname "$d")")"
-        child="$(basename "$d")"
-        relpath="${parent}/${child}"
+    # All git repos at any depth under ~/dev
+    find "$HOME/dev" -name ".git" -type d 2>/dev/null | sort | while read -r gitdir; do
+        d="$(dirname "$gitdir")"
+        relpath="$(realpath --relative-to="$HOME/dev" "$d")"
         remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo "LOCAL_ONLY")
         # Strip any embedded tokens from remote URL
         remote=$(echo "$remote" | sed -E 's|https://[^@]+@github\.com|https://github.com|')
@@ -574,17 +566,18 @@ log "Scanning ~/dev for git repos (2 levels deep)..."
         echo "${relpath}|${remote}|${branch}"
     done
 } > "${STAGING_DIR}/manifests/dev-repos.txt"
-log "  $(grep -c '|' "${STAGING_DIR}/manifests/dev-repos.txt") repos cataloged (including nested)"
+log "  $(grep -c '|' "${STAGING_DIR}/manifests/dev-repos.txt") repos cataloged (all depths)"
 
 # --- 16b. Push All Dev Repos to GitHub ---------------------------------------
 hdr "Push All Dev Repos to GitHub"
 if [ -d "$HOME/dev" ]; then
     PUSH_OK=0; PUSH_FAIL=0; PUSH_SKIP=0; PUSH_DIRTY=0
-    log "Committing and pushing all repos (2 levels deep)..."
-    # Collect all repo paths (level 1 + level 2)
+    log "Committing and pushing all repos (all depths)..."
+    # Collect all repo paths at any depth using find
     REPO_PATHS=()
-    for d in "$HOME/dev"/*/; do [ -d "$d/.git" ] && REPO_PATHS+=("$d"); done
-    for d in "$HOME/dev"/*/*/; do [ -d "$d/.git" ] && REPO_PATHS+=("$d"); done
+    while IFS= read -r gitdir; do
+        REPO_PATHS+=("$(dirname "$gitdir")")
+    done < <(find "$HOME/dev" -name ".git" -type d 2>/dev/null | sort)
 
     for d in "${REPO_PATHS[@]}"; do
         dirname="$(realpath --relative-to="$HOME/dev" "$d")"
