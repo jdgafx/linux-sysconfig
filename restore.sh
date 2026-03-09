@@ -1519,6 +1519,9 @@ if [ -f "$BACKUP_DIR/manifests/dev-repos.txt" ]; then
             target="$TARGET_HOME/dev/$dirname"
             auth_remote=$(inject_token "$remote")
 
+            # Ensure parent directory exists (for nested repos like CUSTOMER_PROJECTS/convertiq.com)
+            mkdir -p "$(dirname "$target")" 2>/dev/null || true
+
             if [ -d "$target/.git" ]; then
                 # Already exists — full fetch + unshallow if needed + pull
                 log "  ${dirname} — exists, full fetch + pull..."

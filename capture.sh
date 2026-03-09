@@ -543,32 +543,51 @@ fi
 
 # --- 16. Dev Repo Manifest ---------------------------------------------------
 hdr "Dev Repos Manifest"
-log "Scanning ~/dev for git repos..."
+log "Scanning ~/dev for git repos (2 levels deep)..."
 {
-    echo "# Dev repo manifest — directory|remote_url"
+    echo "# Dev repo manifest — relative_path|remote_url|branch"
     echo "# Generated $(date -Iseconds)"
+    # Level 1: ~/dev/*/
     for d in "$HOME/dev"/*/; do
         [ ! -d "$d" ] && continue
         dirname="$(basename "$d")"
         if [ -d "$d/.git" ]; then
             remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo "LOCAL_ONLY")
+            # Strip any embedded tokens from remote URL
+            remote=$(echo "$remote" | sed -E 's|https://[^@]+@github\.com|https://github.com|')
             branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "main")
             echo "${dirname}|${remote}|${branch}"
         else
             echo "${dirname}|NOT_A_REPO|"
         fi
     done
+    # Level 2: ~/dev/*/*/ (nested repos inside umbrella dirs like CUSTOMER_PROJECTS)
+    for d in "$HOME/dev"/*/*/; do
+        [ ! -d "$d/.git" ] && continue
+        parent="$(basename "$(dirname "$d")")"
+        child="$(basename "$d")"
+        relpath="${parent}/${child}"
+        remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo "LOCAL_ONLY")
+        # Strip any embedded tokens from remote URL
+        remote=$(echo "$remote" | sed -E 's|https://[^@]+@github\.com|https://github.com|')
+        branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "main")
+        echo "${relpath}|${remote}|${branch}"
+    done
 } > "${STAGING_DIR}/manifests/dev-repos.txt"
-log "  $(grep -c '|' "${STAGING_DIR}/manifests/dev-repos.txt") repos cataloged"
+log "  $(grep -c '|' "${STAGING_DIR}/manifests/dev-repos.txt") repos cataloged (including nested)"
 
 # --- 16b. Push All Dev Repos to GitHub ---------------------------------------
 hdr "Push All Dev Repos to GitHub"
 if [ -d "$HOME/dev" ]; then
     PUSH_OK=0; PUSH_FAIL=0; PUSH_SKIP=0; PUSH_DIRTY=0
-    log "Committing and pushing all repos so restore can clone them..."
-    for d in "$HOME/dev"/*/; do
-        [ ! -d "$d/.git" ] && continue
-        dirname="$(basename "$d")"
+    log "Committing and pushing all repos (2 levels deep)..."
+    # Collect all repo paths (level 1 + level 2)
+    REPO_PATHS=()
+    for d in "$HOME/dev"/*/; do [ -d "$d/.git" ] && REPO_PATHS+=("$d"); done
+    for d in "$HOME/dev"/*/*/; do [ -d "$d/.git" ] && REPO_PATHS+=("$d"); done
+
+    for d in "${REPO_PATHS[@]}"; do
+        dirname="$(realpath --relative-to="$HOME/dev" "$d")"
         remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo "")
 
         # Skip repos without a remote
